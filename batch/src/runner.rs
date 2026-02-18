@@ -13,7 +13,7 @@ use crate::{Error, RunResult};
 const VM_WORK_DIR: &str = "/tmp/batch/work";
 const VM_OUTPUT_DIR: &str = "/tmp/batch/out";
 
-pub struct RunInOutOptions {
+pub struct TaskRunOptions {
     pub disk_size: Option<String>,
     /// Show vm crate's indicatif progress spinners.
     /// Defaults to `true`. Set to `false` in split-live mode where
@@ -21,7 +21,7 @@ pub struct RunInOutOptions {
     pub show_progress: bool,
 }
 
-impl Default for RunInOutOptions {
+impl Default for TaskRunOptions {
     fn default() -> Self {
         Self {
             disk_size: None,
@@ -58,30 +58,30 @@ pub enum RunProgress {
     },
 }
 
-pub async fn run_in_out<Pi, Po>(input: Pi, output: Po) -> Result<RunResult, Error>
+pub async fn run_task<Pi, Po>(input: Pi, output: Po) -> Result<RunResult, Error>
 where
     Pi: AsRef<Path>,
     Po: AsRef<Path>,
 {
-    run_in_out_with(input, output, RunInOutOptions::default()).await
+    run_task_with_options(input, output, TaskRunOptions::default()).await
 }
 
-pub async fn run_in_out_with<Pi, Po>(
+pub async fn run_task_with_options<Pi, Po>(
     input: Pi,
     output: Po,
-    options: RunInOutOptions,
+    options: TaskRunOptions,
 ) -> Result<RunResult, Error>
 where
     Pi: AsRef<Path>,
     Po: AsRef<Path>,
 {
-    run_in_out_with_progress(input, output, options, None).await
+    run_task_with_progress(input, output, options, None).await
 }
 
-pub async fn run_in_out_with_progress<Pi, Po>(
+pub async fn run_task_with_progress<Pi, Po>(
     input: Pi,
     output: Po,
-    options: RunInOutOptions,
+    options: TaskRunOptions,
     progress_tx: Option<std::sync::mpsc::Sender<RunProgress>>,
 ) -> Result<RunResult, Error>
 where
@@ -262,30 +262,30 @@ fn execute_scripts(
     None
 }
 
-pub fn run_in_out_blocking<Pi, Po>(input: Pi, output: Po) -> Result<RunResult, Error>
+pub fn run_task_blocking<Pi, Po>(input: Pi, output: Po) -> Result<RunResult, Error>
 where
     Pi: AsRef<Path>,
     Po: AsRef<Path>,
 {
-    run_in_out_blocking_with(input, output, RunInOutOptions::default())
+    run_task_blocking_with_options(input, output, TaskRunOptions::default())
 }
 
-pub fn run_in_out_blocking_with<Pi, Po>(
+pub fn run_task_blocking_with_options<Pi, Po>(
     input: Pi,
     output: Po,
-    options: RunInOutOptions,
+    options: TaskRunOptions,
 ) -> Result<RunResult, Error>
 where
     Pi: AsRef<Path>,
     Po: AsRef<Path>,
 {
-    run_in_out_blocking_with_progress(input, output, options, None)
+    run_task_blocking_with_progress(input, output, options, None)
 }
 
-pub fn run_in_out_blocking_with_progress<Pi, Po>(
+pub fn run_task_blocking_with_progress<Pi, Po>(
     input: Pi,
     output: Po,
-    options: RunInOutOptions,
+    options: TaskRunOptions,
     progress_tx: Option<std::sync::mpsc::Sender<RunProgress>>,
 ) -> Result<RunResult, Error>
 where
@@ -300,12 +300,7 @@ where
         message: err.to_string(),
     })?;
 
-    runtime.block_on(run_in_out_with_progress(
-        input,
-        output,
-        options,
-        progress_tx,
-    ))
+    runtime.block_on(run_task_with_progress(input, output, options, progress_tx))
 }
 
 fn validate_input_directory(path: &Path) -> Result<&Path, Error> {

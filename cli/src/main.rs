@@ -4,10 +4,9 @@ use std::thread;
 
 use clap::{Parser, Subcommand};
 
-use batch::task::load_task;
-use batch::{run_in_out_blocking_with, Error, RunInOutOptions};
-
-const MAX_CONCURRENT_TASKS: usize = 4;
+use batch::{
+    load_task, run_task_blocking_with_options, Error, TaskRunOptions, MAX_CONCURRENT_TASKS,
+};
 
 /// VMize CLI — run VM tasks and manage the dashboard
 #[derive(Debug, Parser)]
@@ -63,7 +62,7 @@ fn main() {
 
 fn run_sequential(tasks: &[PathBuf]) {
     for (idx, task_path) in tasks.iter().enumerate() {
-        let (task, input, output) = match load_task(task_path) {
+        let loaded = match load_task(task_path) {
             Ok(t) => t,
             Err(err) => {
                 eprintln!("Failed to load task {}: {err}", task_path.display());
@@ -71,21 +70,24 @@ fn run_sequential(tasks: &[PathBuf]) {
             }
         };
 
-        let task_name = task
+        let task_name = loaded
+            .definition
             .name
             .clone()
             .unwrap_or_else(|| format!("task-{}", idx + 1));
-        if let Some(desc) = &task.description {
+        if let Some(desc) = &loaded.definition.description {
             eprintln!("Running task: {task_name} — {desc}");
         } else {
             eprintln!("Running task: {task_name} ({})", task_path.display());
         }
 
-        let options = RunInOutOptions {
-            disk_size: task.disk_size,
+        let options = TaskRunOptions {
+            disk_size: loaded.definition.disk_size.clone(),
             ..Default::default()
         };
-        if let Err(err) = run_in_out_blocking_with(&input, &output, options) {
+        if let Err(err) =
+            run_task_blocking_with_options(&loaded.input_dir, &loaded.output_dir, options)
+        {
             eprintln!("{}", format_task_error(&task_name, err));
             process::exit(1);
         }
@@ -109,19 +111,23 @@ fn run_concurrent(tasks: &[PathBuf]) {
             thread::Builder::new()
                 .name(format!("vmize-task-{idx}"))
                 .spawn(move || -> Result<(), String> {
-                    let (task, input, output) = load_task(&task_path)?;
-                    let name = task.name.unwrap_or_else(|| task_path.display().to_string());
+                    let loaded = load_task(&task_path)?;
+                    let name = loaded
+                        .definition
+                        .name
+                        .clone()
+                        .unwrap_or_else(|| task_path.display().to_string());
                     eprintln!("[start] {name}");
-                    run_in_out_blocking_with(
-                        &input,
-                        &output,
-                        RunInOutOptions {
-                            disk_size: task.disk_size,
+                    run_task_blocking_with_options(
+                        &loaded.input_dir,
+                        &loaded.output_dir,
+                        TaskRunOptions {
+                            disk_size: loaded.definition.disk_size,
                             ..Default::default()
                         },
                     )
                     .map_err(|e| format_task_error(&name, e))?;
-                    eprintln!("[done]  {name} -> {}", output.display());
+                    eprintln!("[done]  {name} -> {}", loaded.output_dir.display());
                     Ok(())
                 })
                 .expect("failed to spawn worker thread")

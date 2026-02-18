@@ -51,12 +51,12 @@ The combined stream is boxed (`Pin<Box<dyn Stream<...>>>`) to unify the two conc
 
 ### Worker threading model
 
-`POST /api/run` spawns one `std::thread` per queued task (NOT `tokio::task::spawn_blocking`, to avoid `BlockingInAsyncContext` from `run_in_out_blocking_with_progress`).
+`POST /api/run` spawns one `std::thread` per queued task (NOT `tokio::task::spawn_blocking`, to avoid `BlockingInAsyncContext` from `run_task_blocking_with_progress`).
 
 Each worker thread:
-1. Loads task definition via `batch::task::load_task()`
+1. Loads task definition via `batch::load_task()`
 2. Spawns a second thread to forward `mpsc::Receiver<RunProgress>` → `broadcast::Sender<String>`
-3. Calls `run_in_out_blocking_with_progress()` (creates its own tokio runtime)
+3. Calls `run_task_blocking_with_progress()` (creates its own tokio runtime)
 4. Joins the forwarder thread
 5. Acquires write lock, updates `TaskEntry` state, calls `push_event`, calls `maybe_clear_running`
 

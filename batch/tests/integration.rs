@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use batch::{run_in_out_blocking, run_in_out_blocking_with, RunInOutOptions};
+use batch::{run_task_blocking, run_task_blocking_with_options, TaskRunOptions};
 
 fn fixture_input_dir(scripts: &[&str], scripts_dir_rel: &str) -> PathBuf {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -50,7 +50,7 @@ fn collect_shell_scripts(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 #[test]
-fn run_in_out_with_example_scripts_collects_outputs() {
+fn run_task_with_options_example_scripts_collects_outputs() {
     let input_dir = fixture_input_dir(&["00_print.sh", "10_result.sh"], "example/task1/scripts");
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -66,8 +66,7 @@ fn run_in_out_with_example_scripts_collects_outputs() {
     }
     fs::create_dir_all(&output_dir).unwrap();
 
-    let result =
-        run_in_out_blocking(&input_dir, &output_dir).expect("integration execution failed");
+    let result = run_task_blocking(&input_dir, &output_dir).expect("integration execution failed");
 
     let expected = vec!["00_print.sh".to_string(), "10_result.sh".to_string()];
     assert_eq!(result.exit_code, 0);
@@ -88,7 +87,7 @@ fn run_in_out_with_example_scripts_collects_outputs() {
 }
 
 #[test]
-fn run_in_out_with_ollama_prompt_collects_answer() {
+fn run_task_with_options_ollama_prompt_collects_answer() {
     if std::env::var("BATCH_OLLAMA_IT").is_err() {
         eprintln!("Skipping Ollama integration test: set BATCH_OLLAMA_IT=1 to run.");
         return;
@@ -109,11 +108,11 @@ fn run_in_out_with_ollama_prompt_collects_answer() {
     }
     fs::create_dir_all(&output_dir).unwrap();
 
-    let options = RunInOutOptions {
+    let options = TaskRunOptions {
         disk_size: Some("20G".to_string()),
         ..Default::default()
     };
-    let result = match run_in_out_blocking_with(&input_dir, &output_dir, options) {
+    let result = match run_task_blocking_with_options(&input_dir, &output_dir, options) {
         Ok(r) => r,
         Err(err) => {
             // Print any logs that were copied back before panicking

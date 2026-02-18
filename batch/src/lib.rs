@@ -1,11 +1,14 @@
 mod error;
 mod result;
 mod runner;
-pub mod task;
+mod task;
+
+pub const MAX_CONCURRENT_TASKS: usize = 4;
 
 pub use error::Error;
 pub use result::RunResult;
 pub use runner::{
-    run_in_out, run_in_out_blocking, run_in_out_blocking_with, run_in_out_blocking_with_progress,
-    run_in_out_with, run_in_out_with_progress, RunInOutOptions, RunPhase, RunProgress,
+    run_task, run_task_blocking, run_task_blocking_with_options, run_task_blocking_with_progress,
+    run_task_with_options, run_task_with_progress, RunPhase, RunProgress, TaskRunOptions,
 };
+pub use task::{load_task, LoadedTask, TaskDefinition};

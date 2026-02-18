@@ -17,7 +17,7 @@ cargo fmt                      # Format
 
 ## Module Layout
 
-- **`runner.rs`** — orchestration: `run_in_out` (async) / `run_in_out_blocking` (sync), helper functions `prepare_vm`, `execute_scripts`
+- **`runner.rs`** — orchestration: `run_task` (async) / `run_task_blocking` (sync), helper functions `prepare_vm`, `execute_scripts`
 - **`error.rs`** — `Error` enum (`thiserror`), one variant per pipeline stage
 - **`result.rs`** — `RunResult` (vm_id, output_dir, executed_scripts, exit_code, elapsed_ms)
 - **`bin/batch.rs`** — CLI entry point, sequential and `--split-live` concurrent modes

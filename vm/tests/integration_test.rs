@@ -268,7 +268,7 @@ fn read_vm_ssh_port(vm_id: &str, data_dir: &Path) -> u16 {
 }
 
 async fn wait_for_ssh(
-    key_path: &PathBuf,
+    key_path: &Path,
     ssh_port: u16,
     username: &str,
     timeout: Duration,
@@ -303,7 +303,7 @@ async fn wait_for_ssh(
             );
         }
 
-        if attempt % 5 == 0 {
+        if attempt.is_multiple_of(5) {
             log_progress(&format!(
                 "Waiting for SSH on {} (attempt {}, elapsed {:?}): {}",
                 ssh_port,
@@ -323,7 +323,7 @@ fn log_progress(message: &str) {
     let _ = io::stderr().flush();
 }
 
-fn run_ssh_command(key_path: &PathBuf, ssh_port: u16, username: &str, cmd: &str) -> Output {
+fn run_ssh_command(key_path: &Path, ssh_port: u16, username: &str, cmd: &str) -> Output {
     Command::new("ssh")
         .args([
             "-i",

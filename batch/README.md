@@ -71,5 +71,5 @@ Example `task.json`:
 cargo test -p batch
 
 # Optional integration path
-BATCH_OLLAMA_IT=1 cargo test run_in_out_with_ollama_prompt_collects_answer --test integration -p batch -- --nocapture
+BATCH_OLLAMA_IT=1 cargo test run_task_with_options_ollama_prompt_collects_answer --test integration -p batch -- --nocapture
 ```

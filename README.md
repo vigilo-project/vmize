@@ -68,7 +68,7 @@ cargo test -p dashboard
 
 # Optional extended paths
 DASHBOARD_IT=1 cargo test --test api run_api_run_task_succeeds -p dashboard -- --nocapture
-BATCH_OLLAMA_IT=1 cargo test run_in_out_with_ollama_prompt_collects_answer --test integration -p batch -- --nocapture
+BATCH_OLLAMA_IT=1 cargo test run_task_with_options_ollama_prompt_collects_answer --test integration -p batch -- --nocapture
 
 # Full workspace
 cargo test

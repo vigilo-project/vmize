@@ -18,10 +18,11 @@ use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
-use batch::task::load_task;
-use batch::{run_in_out_blocking_with_progress, RunInOutOptions, RunPhase, RunProgress};
+use batch::{
+    load_task, run_task_blocking_with_progress, RunPhase, RunProgress, TaskRunOptions,
+    MAX_CONCURRENT_TASKS,
+};
 
-const MAX_QUEUE_TASKS: usize = 4;
 const SSE_REPLAY_CAPACITY: usize = 100;
 
 // ── State ────────────────────────────────────────────────────────────────────
@@ -179,17 +180,19 @@ async fn add_task(State(app): State<AppState>, Json(req): Json<AddTaskRequest>) 
             .into_response();
     }
 
-    if s.tasks.len() >= MAX_QUEUE_TASKS {
+    if s.tasks.len() >= MAX_CONCURRENT_TASKS {
         return (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": format!("queue is full (max {MAX_QUEUE_TASKS})")})),
+            Json(
+                serde_json::json!({"error": format!("queue is full (max {MAX_CONCURRENT_TASKS})")}),
+            ),
         )
             .into_response();
     }
 
     let task_dir = PathBuf::from(&req.dir);
     let (name, description) = match load_task(&task_dir) {
-        Ok((def, _, _)) => (def.name, def.description),
+        Ok(loaded) => (loaded.definition.name, loaded.definition.description),
         Err(err) => {
             return (
                 StatusCode::BAD_REQUEST,
@@ -302,7 +305,7 @@ async fn run_tasks(State(app): State<AppState>) -> Response {
 fn run_task_worker(id: usize, task_path: PathBuf, app: AppState) {
     let started_at = Instant::now();
 
-    let (def, input, output) = match load_task(&task_path) {
+    let loaded = match load_task(&task_path) {
         Ok(t) => t,
         Err(err) => {
             let mut s = app.state.write().unwrap();
@@ -345,11 +348,16 @@ fn run_task_worker(id: usize, task_path: PathBuf, app: AppState) {
         }
     });
 
-    let options = RunInOutOptions {
-        disk_size: def.disk_size,
+    let options = TaskRunOptions {
+        disk_size: loaded.definition.disk_size.clone(),
         show_progress: false,
     };
-    let result = run_in_out_blocking_with_progress(&input, &output, options, Some(progress_tx));
+    let result = run_task_blocking_with_progress(
+        &loaded.input_dir,
+        &loaded.output_dir,
+        options,
+        Some(progress_tx),
+    );
     let _ = progress_thread.join();
 
     let elapsed_ms = started_at.elapsed().as_millis() as u64;
@@ -360,7 +368,7 @@ fn run_task_worker(id: usize, task_path: PathBuf, app: AppState) {
             if let Some(task) = s.tasks.iter_mut().find(|j| j.id == id) {
                 task.state = TaskState::Succeeded;
                 task.elapsed_ms = Some(elapsed_ms);
-                task.output = Some(output.display().to_string());
+                task.output = Some(loaded.output_dir.display().to_string());
             }
             s.push_event(
                 &app.sse_tx,
@@ -369,7 +377,7 @@ fn run_task_worker(id: usize, task_path: PathBuf, app: AppState) {
                     "id": id,
                     "success": true,
                     "elapsed_ms": elapsed_ms,
-                    "output": output.display().to_string(),
+                    "output": loaded.output_dir.display().to_string(),
                 }),
             );
         }
