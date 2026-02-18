@@ -42,12 +42,9 @@ fn failed_job_from_output(output: &str, jobs: &[JobExpectation]) -> Option<Strin
     None
 }
 
-fn fixture_input_dir(scripts: &[&str], input_group: &str) -> PathBuf {
+fn fixture_input_dir(scripts: &[&str], scripts_dir_rel: &str) -> PathBuf {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let fixture_dir: PathBuf = manifest_dir
-        .join("example")
-        .join("scripts")
-        .join(input_group);
+    let fixture_dir: PathBuf = manifest_dir.join(scripts_dir_rel);
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_else(|_| Default::default());
@@ -83,6 +80,7 @@ fn fixture_job_path(filename: &str) -> PathBuf {
 fn batch_bin_path() -> String {
     std::env::var("CARGO_BIN_EXE_batch").unwrap_or_else(|_| {
         Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
             .join("target")
             .join("debug")
             .join("batch")
@@ -117,7 +115,7 @@ fn collect_shell_scripts(dir: &Path, out: &mut Vec<PathBuf>) {
 
 #[test]
 fn run_in_out_with_example_scripts_collects_outputs() {
-    let input_dir = fixture_input_dir(&["00_print.sh", "10_result.sh"], "print-result");
+    let input_dir = fixture_input_dir(&["00_print.sh", "10_result.sh"], "example/job1/scripts");
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_else(|_| Default::default());
@@ -160,7 +158,7 @@ fn run_in_out_with_ollama_prompt_collects_answer() {
         return;
     }
 
-    let input_dir = fixture_input_dir(&["20_ollama_prompt.sh"], "ollama-prompt");
+    let input_dir = fixture_input_dir(&["20_ollama_prompt.sh"], "../jobs/ollama/scripts");
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_else(|_| Default::default());
@@ -177,6 +175,7 @@ fn run_in_out_with_ollama_prompt_collects_answer() {
 
     let options = RunInOutOptions {
         disk_size: Some("20G".to_string()),
+        ..Default::default()
     };
     let result = match run_in_out_blocking_with(&input_dir, &output_dir, options) {
         Ok(r) => r,
@@ -316,8 +315,7 @@ fn run_batch_no_args_prints_usage_and_exits_nonzero() {
 #[test]
 fn all_example_shell_scripts_pass_bash_n() {
     let scripts_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("example")
-        .join("scripts");
+        .join("example");
     let mut scripts = Vec::new();
     collect_shell_scripts(&scripts_root, &mut scripts);
     scripts.sort();
