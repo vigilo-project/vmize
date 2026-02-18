@@ -2,6 +2,7 @@
 
 `dashboard` is VMize's web control plane for [`batch`](../batch).
 It provides queueing, live progress, and operational visibility for task runs.
+`dashboard` is a library crate and is launched through `vmize dashboard`.
 
 ## Minimum Goal
 The MVP is complete only when all of these pass end-to-end in a browser:
@@ -25,7 +26,7 @@ The MVP is complete only when all of these pass end-to-end in a browser:
 
 ```bash
 cargo build --release
-./target/release/dashboard --port 8080
+./target/release/vmize dashboard --port 8080
 ```
 
 Open `http://localhost:8080`.
@@ -44,9 +45,27 @@ Open `http://localhost:8080`.
 ## Verification Commands
 
 ```bash
-cargo test -p dashboard --bin dashboard
+cargo test -p dashboard --lib
 cargo test -p dashboard --test api
 
 # Optional VM-required path
 DASHBOARD_IT=1 cargo test --test api run_api_run_task_succeeds -p dashboard -- --nocapture
+```
+
+## Optional Browser E2E (Layout)
+
+The dashboard includes optional Playwright tests for the task-grid layout rules:
+- 1 task: full-width single column
+- 2 tasks: left/right split
+- 3 tasks: three equal columns
+- 4 tasks: 2 x 2 grid
+- mobile viewport: always one column
+
+Run:
+
+```bash
+cd dashboard
+npm install
+npx playwright install chromium
+npm run e2e
 ```

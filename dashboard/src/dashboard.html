@@ -74,8 +74,16 @@
 
     .tasks {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
       gap: 16px;
+    }
+
+    .tasks.layout-1 { grid-template-columns: 1fr; }
+    .tasks.layout-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .tasks.layout-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .tasks.layout-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+    @media (max-width: 1024px) {
+      .tasks { grid-template-columns: 1fr !important; }
     }
 
     .task-card {
@@ -497,12 +505,27 @@
       btn.disabled = running || !hasQueued;
       const queued  = Object.values(tasks).filter(j => j.state === 'queued').length;
       const total   = Object.keys(tasks).length;
+      updateLayout(total);
       setStatus(
         running    ? 'Tasks running…' :
         hasQueued  ? queued + ' task' + (queued > 1 ? 's' : '') + ' queued' + (total > queued ? ', ' + (total - queued) + ' finished' : '') + ' — press Run All' :
         total > 0  ? 'All tasks finished' :
                      'No tasks — add a task directory above'
       );
+    }
+
+    function updateLayout(total) {
+      const container = document.getElementById('tasks');
+      container.classList.remove('layout-1', 'layout-2', 'layout-3', 'layout-4');
+      if (total <= 1) {
+        container.classList.add('layout-1');
+      } else if (total === 2) {
+        container.classList.add('layout-2');
+      } else if (total === 3) {
+        container.classList.add('layout-3');
+      } else {
+        container.classList.add('layout-4');
+      }
     }
 
     function setStatus(msg) {
