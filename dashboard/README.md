@@ -52,6 +52,8 @@ cargo test -p dashboard --test api
 DASHBOARD_IT=1 cargo test --test api run_api_run_task_succeeds -p dashboard -- --nocapture
 ```
 
+`cargo test` does not run browser Playwright tests.
+
 ## Optional Browser E2E (Layout)
 
 The dashboard includes optional Playwright tests for the task-grid layout rules:

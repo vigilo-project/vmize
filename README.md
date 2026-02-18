@@ -74,6 +74,9 @@ cargo test -p dashboard
 DASHBOARD_IT=1 cargo test --test api run_api_run_task_succeeds -p dashboard -- --nocapture
 BATCH_OLLAMA_IT=1 cargo test run_task_with_options_ollama_prompt_collects_answer --test integration -p batch -- --nocapture
 
+# Optional browser E2E (separate from `cargo test`)
+(cd dashboard && npm install && npx playwright install chromium && npm run e2e)
+
 # Full workspace
 cargo test
 ```
