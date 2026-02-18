@@ -9,19 +9,20 @@ dashboard — VMize's axum-based web server for running `batch` tasks in paralle
 ```bash
 cargo build                    # Debug build
 cargo build --release          # Release build
-cargo test --lib               # Unit tests only (no server, no QEMU)
-cargo test --test api          # HTTP API integration tests (no QEMU)
+cargo test -p dashboard --lib       # Unit tests only (no QEMU)
+cargo test -p dashboard --test api  # HTTP API integration tests
+cargo run -p vmize -- dashboard --help
 cargo clippy                   # Lint
 cargo fmt                      # Format
 ```
 
 ## Architecture
 
-Everything lives in `src/main.rs` (single binary, no lib crate).
+Core server logic lives in `src/lib.rs` (library crate). The workspace CLI entrypoint that launches it is `../cli/src/main.rs`.
 
 ### Entry point
 
-`main()` parses CLI (`--port`, default 8080), initialises `AppState`, registers six axum routes, and calls `axum::serve`.
+`dashboard::start(port)` initialises `AppState`, registers six axum routes, and calls `axum::serve`. CLI parsing (`--port`, default 8080) is handled by `vmize dashboard`.
 
 ### Shared state
 

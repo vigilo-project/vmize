@@ -77,7 +77,7 @@ jobs:
 
       - name: Verify 4-task concurrent run
         run: |
-          cargo run -p batch --bin batch -- --concurrent \
+          cargo run -p vmize -- task --concurrent \
             batch/example/split-task1 \
             batch/example/split-task2 \
             batch/example/split-task3 \
@@ -119,8 +119,8 @@ jobs:
           chmod +x ./deps.sh
           sudo ./deps.sh
 
-      - name: Run DASHBOARD binary tests
-        run: cargo test -p dashboard --bin dashboard -- --nocapture
+      - name: Run DASHBOARD library tests
+        run: cargo test -p dashboard --lib -- --nocapture
 
       - name: Run DASHBOARD API tests (includes VM end-to-end)
         run: cargo test -p dashboard --test api -- --nocapture

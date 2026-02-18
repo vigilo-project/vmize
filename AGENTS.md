@@ -4,14 +4,15 @@
 VMize turns tasks into VMs. Each workload runs in an ephemeral machine so host state stays reproducible.
 
 ## Project Structure
-This repository is a Cargo workspace with three crates:
+This repository is a Cargo workspace with four crates and one shared tasks directory:
 - `vm/`: VM lifecycle CLI using Ubuntu cloud images + QEMU.
 - `batch/`: task-directory runner built on top of `vm`.
-- `dashboard/`: web UI/API for queueing and running `batch` tasks.
+- `dashboard/`: web UI/API library for queueing and running `batch` tasks.
+- `cli/`: workspace CLI (`vmize`) for running tasks and starting the dashboard.
 - `tasks/`: shared task fixtures (`task.json`, `scripts/`, `output/`).
 
 Key paths:
-- `vm/src/`, `batch/src/`, `dashboard/src/`
+- `vm/src/`, `batch/src/`, `dashboard/src/`, `cli/src/`
 - `vm/tests/`, `batch/tests/`, `dashboard/tests/`
 - `batch/example/`, `tasks/`
 
@@ -36,8 +37,9 @@ For any change in `dashboard/` (UI, API, task execution flow, SSE), treat `dashb
 ## Build, Test, and Development Commands
 - `cargo build --release`
 - `cargo test`
-- `cargo test --lib --bin batch -p batch`
+- `cargo test -p batch --lib`
 - `cargo test --test api -p dashboard`
+- `cargo run -p vmize -- --help`
 - `(cd vm && ./deps.sh)`
 
 ## Coding Style

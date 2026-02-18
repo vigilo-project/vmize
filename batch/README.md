@@ -2,6 +2,7 @@
 
 `batch` is VMize's task execution engine.
 It runs task directories in ephemeral VMs so each workload is isolated.
+`batch` is a library crate; use the workspace `vmize` CLI to execute tasks.
 
 Built on top of [`vm`](https://github.com/vigilo-project/vm), `batch` defines a task as:
 - `task.json`
@@ -29,21 +30,21 @@ Shared curated tasks in this workspace live in `../tasks/`.
 cargo build --release
 
 # Single task
-./target/release/batch example/task1
+./target/release/vmize task batch/example/task1
 
 # Multiple tasks (sequential)
-./target/release/batch example/task1 example/task2
+./target/release/vmize task batch/example/task1 batch/example/task2
 
 # Concurrent (max 4)
-./target/release/batch --concurrent \
-  example/split-task1 \
-  example/split-task2 \
-  example/split-task3 \
-  example/split-task4
+./target/release/vmize task --concurrent \
+  batch/example/split-task1 \
+  batch/example/split-task2 \
+  batch/example/split-task3 \
+  batch/example/split-task4
 
 # Shared tasks
-./target/release/batch ../tasks/runc
-./target/release/batch ../tasks/runc-llama
+./target/release/vmize task tasks/runc
+./target/release/vmize task tasks/runc-llama
 ```
 
 ## Task Directory Structure

@@ -9,8 +9,9 @@ batch — VMize's Rust task runner that executes shell-script workloads inside e
 ```bash
 cargo build                    # Debug build
 cargo build --release          # Release build
-cargo test                     # All tests (requires QEMU)
-cargo test --lib --bin batch  # Unit tests only
+cargo test -p batch            # All tests (integration paths require QEMU)
+cargo test -p batch --lib      # Library/unit tests only
+cargo run -p vmize -- task --help
 cargo clippy                   # Lint
 cargo fmt                      # Format
 ```
@@ -20,7 +21,7 @@ cargo fmt                      # Format
 - **`runner.rs`** — orchestration: `run_task` (async) / `run_task_blocking` (sync), helper functions `prepare_vm`, `execute_scripts`
 - **`error.rs`** — `Error` enum (`thiserror`), one variant per pipeline stage
 - **`result.rs`** — `RunResult` (vm_id, output_dir, executed_scripts, exit_code, elapsed_ms)
-- **`bin/batch.rs`** — CLI entry point, sequential and `--split-live` concurrent modes
+- **`../cli/src/main.rs`** — workspace CLI entry point (`vmize task` sequential and `--concurrent`)
 
 ## Core Flow (`runner.rs`)
 

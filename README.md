@@ -6,7 +6,7 @@
 
 VMize batches, isolates, and executes workloads inside ephemeral virtual machines so the host stays clean.
 
-## Crates
+## Workspace Components
 
 ### [`vm`](./vm)
 
@@ -21,13 +21,17 @@ A **task** is a directory with `task.json`, `scripts/`, and `output/`.
 
 Web control plane for queuing and running `batch` tasks with live progress.
 
+### [`cli` (`vmize`)](./cli)
+
+Workspace CLI that exposes `task` and `dashboard` commands.
+
 ### [`tasks`](./tasks)
 
 Shared task directories (for example `runc`, `runc-llama`, `ollama`).
 
 ## Dependency Chain
 
-`dashboard -> batch -> vm -> QEMU/KVM (Linux) or HVF (macOS)`
+`vmize -> (dashboard | batch) -> vm -> QEMU/KVM (Linux) or HVF (macOS)`
 
 ## Minimum Goals At A Glance
 
@@ -47,15 +51,15 @@ cargo build --release
 
 ```bash
 cargo build --release
-./target/release/batch batch/example/task1
-./target/release/batch tasks/runc-llama
+./target/release/vmize task batch/example/task1
+./target/release/vmize task tasks/runc-llama
 ```
 
 ## Quick Start: dashboard
 
 ```bash
 cargo build --release
-./target/release/dashboard --port 8080
+./target/release/vmize dashboard --port 8080
 ```
 
 ## Verification
@@ -82,5 +86,6 @@ vmize/
 ├── vm/
 ├── batch/
 ├── dashboard/
+├── cli/
 └── tasks/
 ```
