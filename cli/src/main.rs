@@ -2,38 +2,63 @@ use std::path::PathBuf;
 use std::process;
 use std::thread;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 
 use batch::task::load_task;
 use batch::{run_in_out_blocking_with, Error, RunInOutOptions};
 
 const MAX_CONCURRENT_TASKS: usize = 4;
 
+/// VMize CLI — run VM tasks and manage the dashboard
 #[derive(Debug, Parser)]
-#[command(name = "batch")]
-#[command(about = "Run one or more VM tasks described by a task directory")]
+#[command(name = "vmize", version, about)]
 struct Cli {
-    #[arg(long, help = "Run all tasks concurrently (max 4)")]
-    concurrent: bool,
+    #[command(subcommand)]
+    command: Commands,
+}
 
-    #[arg(value_name = "TASK_DIR")]
-    tasks: Vec<PathBuf>,
+#[derive(Debug, Subcommand)]
+enum Commands {
+    /// Run one or more VM tasks described by a task directory
+    Task {
+        /// Run all tasks concurrently (max 4)
+        #[arg(long)]
+        concurrent: bool,
+
+        /// Task directories containing task.json + scripts/
+        #[arg(value_name = "TASK_DIR")]
+        tasks: Vec<PathBuf>,
+    },
+
+    /// Start the web dashboard
+    Dashboard {
+        /// Port to listen on
+        #[arg(long, default_value = "8080")]
+        port: u16,
+    },
 }
 
 fn main() {
     let cli = Cli::parse();
 
-    if cli.tasks.is_empty() {
-        eprintln!("Usage: batch <task-dir> [task-dir ...]");
-        process::exit(1);
-    }
+    match cli.command {
+        Commands::Task { concurrent, tasks } => {
+            if tasks.is_empty() {
+                eprintln!("Usage: vmize task <task-dir> [task-dir ...]");
+                process::exit(1);
+            }
 
-    if cli.concurrent {
-        run_concurrent(&cli.tasks);
-        return;
+            if concurrent {
+                run_concurrent(&tasks);
+            } else {
+                run_sequential(&tasks);
+            }
+        }
+        Commands::Dashboard { port } => {
+            let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+            rt.block_on(dashboard::start(port));
+        }
     }
-
-    run_sequential(&cli.tasks);
 }
 
 fn run_sequential(tasks: &[PathBuf]) {
@@ -82,7 +107,7 @@ fn run_concurrent(tasks: &[PathBuf]) {
         .enumerate()
         .map(|(idx, task_path)| {
             thread::Builder::new()
-                .name(format!("batch-task-{idx}"))
+                .name(format!("vmize-task-{idx}"))
                 .spawn(move || -> Result<(), String> {
                     let (task, input, output) = load_task(&task_path)?;
                     let name = task.name.unwrap_or_else(|| task_path.display().to_string());

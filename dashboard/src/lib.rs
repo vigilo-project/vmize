@@ -14,7 +14,6 @@ use axum::{
     routing::{delete, get, post},
     Json, Router,
 };
-use clap::Parser;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
@@ -24,16 +23,6 @@ use batch::{run_in_out_blocking_with_progress, RunInOutOptions, RunPhase, RunPro
 
 const MAX_QUEUE_TASKS: usize = 4;
 const SSE_REPLAY_CAPACITY: usize = 100;
-
-// ── CLI ──────────────────────────────────────────────────────────────────────
-
-#[derive(Debug, Parser)]
-#[command(name = "dashboard")]
-#[command(about = "Web dashboard for running VM batch tasks")]
-struct Cli {
-    #[arg(long, default_value = "8080")]
-    port: u16,
-}
 
 // ── State ────────────────────────────────────────────────────────────────────
 
@@ -108,10 +97,10 @@ struct AddTaskRequest {
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
-#[tokio::main]
-async fn main() {
-    let cli = Cli::parse();
-
+/// Start the dashboard web server on the given port.
+///
+/// This function runs until the server is shut down (e.g. the task is aborted).
+pub async fn start(port: u16) {
     let (sse_tx, _) = broadcast::channel::<String>(256);
     let app_state = AppState {
         state: Arc::new(RwLock::new(DashboardState::new())),
@@ -127,8 +116,8 @@ async fn main() {
         .route("/api/run", post(run_tasks))
         .with_state(app_state);
 
-    let addr = format!("0.0.0.0:{}", cli.port);
-    eprintln!("Dashboard: http://localhost:{}", cli.port);
+    let addr = format!("0.0.0.0:{port}");
+    eprintln!("Dashboard: http://localhost:{port}");
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }

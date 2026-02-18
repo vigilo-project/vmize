@@ -5,43 +5,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use batch::{run_in_out_blocking, run_in_out_blocking_with, RunInOutOptions};
 
-#[derive(Debug)]
-struct TaskExpectation {
-    name: &'static str,
-    output_dir: PathBuf,
-    task_file: PathBuf,
-    required_outputs: Vec<&'static str>,
-}
-
-fn expect_task_outputs(expectation: &TaskExpectation) {
-    let missing: Vec<&'static str> = expectation
-        .required_outputs
-        .iter()
-        .copied()
-        .filter(|item| !expectation.output_dir.join(item).exists())
-        .collect();
-
-    assert!(
-        missing.is_empty(),
-        "task '{}' did not produce expected outputs in {:?}: {:?}",
-        expectation.name,
-        expectation.output_dir,
-        missing
-    );
-}
-
-fn failed_task_from_output(output: &str, tasks: &[TaskExpectation]) -> Option<String> {
-    for task in tasks {
-        if output.contains(&format!("Failed to execute {}", task.name)) {
-            return Some(task.name.to_string());
-        }
-        if output.contains(&format!("Failed to load task {}", task.task_file.display())) {
-            return Some(task.name.to_string());
-        }
-    }
-    None
-}
-
 fn fixture_input_dir(scripts: &[&str], scripts_dir_rel: &str) -> PathBuf {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let fixture_dir: PathBuf = manifest_dir.join(scripts_dir_rel);
@@ -60,33 +23,6 @@ fn fixture_input_dir(scripts: &[&str], scripts_dir_rel: &str) -> PathBuf {
     }
 
     input_dir
-}
-
-fn fixture_simple_output_dir(label: &str) -> PathBuf {
-    let output_dir = Path::new("/tmp").join("batch").join(label);
-    if output_dir.exists() {
-        fs::remove_dir_all(&output_dir).unwrap();
-    }
-    fs::create_dir_all(&output_dir).unwrap();
-    output_dir
-}
-
-fn fixture_task_path(filename: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("example")
-        .join(filename)
-}
-
-fn batch_bin_path() -> String {
-    std::env::var("CARGO_BIN_EXE_batch").unwrap_or_else(|_| {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("target")
-            .join("debug")
-            .join("batch")
-            .to_string_lossy()
-            .into_owned()
-    })
 }
 
 fn collect_shell_scripts(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -207,109 +143,6 @@ fn run_in_out_with_ollama_prompt_collects_answer() {
     assert!(
         !answer.trim().is_empty(),
         "ollama-answer.txt must not be empty"
-    );
-}
-
-#[test]
-fn run_batch_cli_with_two_tasks() {
-    let task1 = fixture_task_path("task1");
-    let task2 = fixture_task_path("task2");
-    let batch_bin = batch_bin_path();
-
-    let result = Command::new(batch_bin)
-        .arg(task1.as_os_str())
-        .arg(task2.as_os_str())
-        .output()
-        .expect("failed to execute batch binary");
-
-    let io = String::from_utf8_lossy(&result.stdout);
-    let err = String::from_utf8_lossy(&result.stderr);
-    let combined = format!("{io}{err}");
-    let tasks = [
-        TaskExpectation {
-            name: "task1-print-result",
-            output_dir: task1.join("output"),
-            task_file: task1.clone(),
-            required_outputs: vec![
-                "00_print.sh.log",
-                "10_result.sh.log",
-                "hello.txt",
-                "result.txt",
-            ],
-        },
-        TaskExpectation {
-            name: "task2-print-only",
-            output_dir: task2.join("output"),
-            task_file: task2.clone(),
-            required_outputs: vec!["00_print.sh.log", "hello.txt"],
-        },
-    ];
-
-    if !result.status.success() {
-        let failed_task = failed_task_from_output(&combined, &tasks)
-            .or_else(|| {
-                tasks
-                    .iter()
-                    .find(|task| !task.output_dir.join("00_print.sh.log").exists())
-                    .map(|task| task.name.to_string())
-            })
-            .unwrap_or_else(|| "unknown task".to_string());
-        panic!(
-            "batch failed at: {failed_task}\nstatus: {:?}\nstdout: {io}\nstderr: {err}",
-            result.status
-        );
-    }
-
-    assert!(
-        combined.contains("Running task: task1-print-result")
-            && combined.contains("Running task: task2-print-only")
-    );
-
-    tasks.iter().for_each(expect_task_outputs);
-}
-
-#[test]
-fn run_batch_concurrent_rejects_more_than_four_tasks() {
-    let batch_bin = batch_bin_path();
-    let task = fixture_task_path("task1");
-
-    let result = Command::new(batch_bin)
-        .arg("--concurrent")
-        .arg(task.as_os_str())
-        .arg(task.as_os_str())
-        .arg(task.as_os_str())
-        .arg(task.as_os_str())
-        .arg(task.as_os_str())
-        .output()
-        .expect("failed to execute batch binary");
-
-    assert!(
-        !result.status.success(),
-        "--concurrent with >4 tasks must fail"
-    );
-    let stderr = String::from_utf8_lossy(&result.stderr);
-    assert!(
-        stderr.contains("--concurrent supports up to 4 tasks"),
-        "stderr did not contain max-tasks error: {stderr}"
-    );
-}
-
-#[test]
-fn run_batch_no_args_prints_usage_and_exits_nonzero() {
-    let batch_bin = batch_bin_path();
-
-    let result = Command::new(batch_bin)
-        .output()
-        .expect("failed to execute batch binary");
-
-    assert!(
-        !result.status.success(),
-        "batch with no args must exit non-zero"
-    );
-    let stderr = String::from_utf8_lossy(&result.stderr);
-    assert!(
-        stderr.contains("Usage:"),
-        "stderr must contain usage hint: {stderr}"
     );
 }
 

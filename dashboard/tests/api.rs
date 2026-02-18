@@ -1,29 +1,19 @@
 //! HTTP API integration tests for dashboard.
 //!
-//! These tests spawn the real `dashboard` binary on a free port, exercise
-//! every endpoint, and verify responses.  No QEMU is required — `POST /api/run`
-//! is only tested end-to-end when `DASHBOARD_IT=1` is set.
+//! These tests spawn the dashboard server in-process via `dashboard::start()`,
+//! exercise every endpoint, and verify responses.  No QEMU is required —
+//! `POST /api/run` is only tested end-to-end when `DASHBOARD_IT=1` is set.
 //!
 //! Requires:
-//!   - `dashboard` binary to be built (debug or release)
 //!   - `curl` on PATH (used for the SSE replay test)
 
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use reqwest::blocking::Client;
+use tokio::task::JoinHandle;
 
 // ── helpers ───────────────────────────────────────────────────────────────────
-
-fn dashboard_bin() -> String {
-    std::env::var("CARGO_BIN_EXE_dashboard").unwrap_or_else(|_| {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../target/debug/dashboard")
-            .to_string_lossy()
-            .into_owned()
-    })
-}
 
 fn example_task_dir() -> String {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -44,20 +34,23 @@ fn find_free_port() -> u16 {
 
 struct TestServer {
     pub port: u16,
-    process: Child,
+    handle: JoinHandle<()>,
 }
 
 impl TestServer {
     fn start() -> Self {
         let port = find_free_port();
-        let bin = dashboard_bin();
-        let process = Command::new(&bin)
-            .arg("--port")
-            .arg(port.to_string())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap_or_else(|e| panic!("failed to start {bin}: {e}"));
+
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("failed to create tokio runtime");
+
+        let handle = rt.spawn(dashboard::start(port));
+
+        // Leak the runtime so it stays alive for the test duration.
+        // The JoinHandle::abort in Drop will stop the server task.
+        std::mem::forget(rt);
 
         // Poll until the server responds or the deadline passes.
         let client = Client::new();
@@ -77,7 +70,7 @@ impl TestServer {
             std::thread::sleep(Duration::from_millis(50));
         }
 
-        TestServer { port, process }
+        TestServer { port, handle }
     }
 
     fn url(&self, path: &str) -> String {
@@ -91,8 +84,7 @@ impl TestServer {
 
 impl Drop for TestServer {
     fn drop(&mut self) {
-        self.process.kill().ok();
-        self.process.wait().ok();
+        self.handle.abort();
     }
 }
 
@@ -420,7 +412,7 @@ fn sse_replays_loaded_event_to_new_subscriber() {
         .unwrap();
 
     // Connect via curl with a short max-time; the replay event arrives immediately.
-    let output = Command::new("curl")
+    let output = std::process::Command::new("curl")
         .args(["-s", "-N", "--max-time", "2"])
         .arg(server.url("/events"))
         .output()

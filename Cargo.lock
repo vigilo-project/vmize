@@ -135,7 +135,6 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 name = "batch"
 version = "0.1.0"
 dependencies = [
- "clap",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -268,7 +267,6 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "batch",
- "clap",
  "futures",
  "reqwest",
  "serde",
@@ -1913,6 +1911,16 @@ dependencies = [
  "tokio-test",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "vmize"
+version = "0.1.0"
+dependencies = [
+ "batch",
+ "clap",
+ "dashboard",
+ "tokio",
 ]
 
 [[package]]

@@ -3,6 +3,7 @@ members = [
     "vm",
     "batch",
     "dashboard",
+    "cli",
 ]
 resolver = "2"
 
