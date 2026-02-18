@@ -1,0 +1,126 @@
+name: macOS CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  vm:
+    name: "1) VM stage"
+    runs-on: macos-26
+    timeout-minutes: 120
+    env:
+      VM_QEMU_ACCEL: tcg
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install VM dependencies and image
+        run: |
+          cd vm
+          chmod +x ./deps.sh
+          ./deps.sh
+
+      - name: Run VM tests (includes cloud-image apt update)
+        run: cargo test -p vm -- --nocapture
+
+  batch:
+    name: "2) BATCH stage"
+    runs-on: macos-26
+    timeout-minutes: 120
+    needs: vm
+    env:
+      VM_QEMU_ACCEL: tcg
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install VM dependencies and image
+        run: |
+          cd vm
+          chmod +x ./deps.sh
+          ./deps.sh
+
+      - name: Warm shared VM key material
+        run: |
+          set -euo pipefail
+          warm_output="$(cargo run -p vm -- run --ssh-port 2299)"
+          warm_vm_id="$(printf '%s\n' "$warm_output" | awk '{print $NF}' | tail -n1)"
+          if [ -z "${warm_vm_id}" ]; then
+            echo "Failed to parse warm VM id from output"
+            echo "$warm_output"
+            exit 1
+          fi
+          echo "WARM_VM_ID=${warm_vm_id}" >> "$GITHUB_ENV"
+
+      - name: Verify 4-task concurrent run
+        run: |
+          cargo run -p batch --bin batch -- --concurrent \
+            batch/example/split-task1 \
+            batch/example/split-task2 \
+            batch/example/split-task3 \
+            batch/example/split-task4
+
+      - name: Cleanup warm VM
+        if: always()
+        run: |
+          if [ -n "${WARM_VM_ID:-}" ]; then
+            cargo run -p vm -- rm "$WARM_VM_ID"
+          fi
+
+      - name: Run BATCH tests
+        run: cargo test -p batch -- --nocapture
+
+  dashboard:
+    name: "3) DASHBOARD stage"
+    runs-on: macos-26
+    timeout-minutes: 120
+    needs: batch
+    env:
+      VM_QEMU_ACCEL: tcg
+      DASHBOARD_IT: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install VM dependencies and image
+        run: |
+          cd vm
+          chmod +x ./deps.sh
+          ./deps.sh
+
+      - name: Run DASHBOARD binary tests
+        run: cargo test -p dashboard --bin dashboard -- --nocapture
+
+      - name: Run DASHBOARD API tests (includes VM end-to-end)
+        run: cargo test -p dashboard --test api -- --nocapture
