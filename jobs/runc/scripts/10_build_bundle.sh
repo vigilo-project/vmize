@@ -2,7 +2,7 @@
 set -euo pipefail
 
 CONTAINER_NAME="basic"
-BUNDLE_DIR="/tmp/vm-batch/work/bundle"
+BUNDLE_DIR="/tmp/batch/work/bundle"
 
 case "$(uname -m)" in
     aarch64)
@@ -95,6 +95,6 @@ echo "    Container name: ${CONTAINER_NAME}"
 echo "    Artifact: ${ARTIFACT_DIR}/config.json"
 echo "    Artifact: ${ARTIFACT_DIR}/rootfs.tar.xz"
 
-# Copy artifacts to vm-batch output directory
-cp "${ARTIFACT_DIR}/config.json" /tmp/vm-batch/out/config.json
-cp "${ARTIFACT_DIR}/rootfs.tar.xz" /tmp/vm-batch/out/rootfs.tar.xz
+# Copy artifacts to batch output directory
+cp "${ARTIFACT_DIR}/config.json" /tmp/batch/out/config.json
+cp "${ARTIFACT_DIR}/rootfs.tar.xz" /tmp/batch/out/rootfs.tar.xz

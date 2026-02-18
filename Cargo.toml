@@ -1,8 +1,8 @@
 [workspace]
 members = [
     "vm",
-    "vm-batch",
-    "vm-dashboard",
+    "batch",
+    "dashboard",
 ]
 resolver = "2"
 

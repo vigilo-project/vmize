@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ARTIFACT_DIR="/tmp/vm-batch/work/bundle/artifacts"
+ARTIFACT_DIR="/tmp/batch/work/bundle/artifacts"
 
 command -v jq >/dev/null 2>&1 || { echo "[ERROR] jq not found"; exit 1; }
 command -v tar >/dev/null 2>&1 || { echo "[ERROR] tar not found"; exit 1; }
@@ -34,9 +34,9 @@ echo "[+] Bundle verification passed"
 echo "    ${CONFIG_PATH}"
 echo "    ${ROOTFS_TAR}"
 
-# Write verification result to vm-batch output
+# Write verification result to batch output
 {
     echo "[+] Bundle verification passed"
     echo "    config.json: OK"
     echo "    rootfs.tar.xz: OK"
-} > /tmp/vm-batch/out/verify.log
+} > /tmp/batch/out/verify.log

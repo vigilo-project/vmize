@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BUNDLE_DIR="/tmp/vm-batch/work/bundle"
+BUNDLE_DIR="/tmp/batch/work/bundle"
 ARTIFACT_DIR="${BUNDLE_DIR}/artifacts"
 BUNDLE_ENV="${ARTIFACT_DIR}/bundle.env"
 
@@ -22,7 +22,7 @@ source "${BUNDLE_ENV}"
 CONTAINER_NAME="${CONTAINER_NAME:-llama-basic}"
 MODEL_FILE="${MODEL_FILE:?MODEL_FILE missing in bundle.env}"
 MODEL_PATH="${MODEL_PATH:?MODEL_PATH missing in bundle.env}"
-PROMPT_TEXT="${LLAMA_PROMPT:-${PROMPT_TEXT:-Say in one short sentence that vm-batch runc llama demo works.}}"
+PROMPT_TEXT="${LLAMA_PROMPT:-${PROMPT_TEXT:-Say in one short sentence that batch runc llama demo works.}}"
 
 if [[ ! -f "${BUNDLE_DIR}/config.json" ]]; then
     echo "[ERROR] config.json not found at ${BUNDLE_DIR}/config.json"
@@ -81,19 +81,19 @@ prompt_escaped="$(printf '%s' "${PROMPT_TEXT}" | sed "s/'/'\"'\"'/g")"
 echo "[*] Running prompt against mounted model /models/${MODEL_FILE}"
 # Keep subprocess output deterministic and force one-shot exit.
 run_exec "/opt/llama.cpp/build/bin/llama-cli -m /models/${MODEL_FILE} -p '${prompt_escaped}' -n 48 --temp 0.2 --seed 42 --single-turn --simple-io" \
-    > /tmp/vm-batch/out/llama-answer.txt \
-    2> /tmp/vm-batch/out/llama-error.txt
+    > /tmp/batch/out/llama-answer.txt \
+    2> /tmp/batch/out/llama-error.txt
 
-if ! grep -q '[[:alnum:]]' /tmp/vm-batch/out/llama-answer.txt; then
+if ! grep -q '[[:alnum:]]' /tmp/batch/out/llama-answer.txt; then
     echo "[ERROR] llama.cpp produced empty output"
-    if [[ -s /tmp/vm-batch/out/llama-error.txt ]]; then
-        cat /tmp/vm-batch/out/llama-error.txt >&2
+    if [[ -s /tmp/batch/out/llama-error.txt ]]; then
+        cat /tmp/batch/out/llama-error.txt >&2
     fi
     exit 1
 fi
 
-${SUDO} runc list > /tmp/vm-batch/out/runc-list.txt
-run_exec "/opt/llama.cpp/build/bin/llama-cli --version" > /tmp/vm-batch/out/llama-version.txt 2>&1 || true
-printf '%s\n' "${PROMPT_TEXT}" > /tmp/vm-batch/out/prompt.txt
+${SUDO} runc list > /tmp/batch/out/runc-list.txt
+run_exec "/opt/llama.cpp/build/bin/llama-cli --version" > /tmp/batch/out/llama-version.txt 2>&1 || true
+printf '%s\n' "${PROMPT_TEXT}" > /tmp/batch/out/prompt.txt
 
 echo "[+] llama.cpp prompt execution succeeded"

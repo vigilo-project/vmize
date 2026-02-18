@@ -2,11 +2,11 @@
 set -euo pipefail
 
 CONTAINER_NAME="llama-basic"
-BUNDLE_DIR="/tmp/vm-batch/work/bundle"
+BUNDLE_DIR="/tmp/batch/work/bundle"
 ARTIFACT_DIR="${BUNDLE_DIR}/artifacts"
 MODELS_DIR="${BUNDLE_DIR}/models"
 ROOTFS_DIR="${BUNDLE_DIR}/rootfs"
-INPUT_MODELS_DIR="/tmp/vm-batch/work/models"
+INPUT_MODELS_DIR="/tmp/batch/work/models"
 
 case "$(uname -m)" in
     aarch64)
@@ -220,7 +220,7 @@ if [[ ! -s "${MODEL_PATH}" ]]; then
     exit 1
 fi
 
-PROMPT_TEXT="${LLAMA_PROMPT:-Say in one short sentence that vm-batch runc llama demo works.}"
+PROMPT_TEXT="${LLAMA_PROMPT:-Say in one short sentence that batch runc llama demo works.}"
 PROMPT_TEXT_ESCAPED="$(printf '%s' "${PROMPT_TEXT}" | sed "s/'/'\"'\"'/g")"
 MODEL_URL_ESCAPED="$(printf '%s' "${MODEL_URL}" | sed "s/'/'\"'\"'/g")"
 
@@ -237,5 +237,5 @@ echo "    config: ${BUNDLE_DIR}/config.json"
 echo "    rootfs: ${ROOTFS_DIR}"
 echo "    model:  ${MODEL_PATH}"
 
-cp "${ARTIFACT_DIR}/bundle.env" /tmp/vm-batch/out/bundle.env
-cp "${BUNDLE_DIR}/config.json" /tmp/vm-batch/out/config.json
+cp "${ARTIFACT_DIR}/bundle.env" /tmp/batch/out/bundle.env
+cp "${BUNDLE_DIR}/config.json" /tmp/batch/out/config.json

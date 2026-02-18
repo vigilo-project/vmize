@@ -1,0 +1,7 @@
+/target/
+
+# Job output directories
+jobs/*/output/*
+!jobs/*/output/.gitkeep
+example/*/output/*
+!example/*/output/.gitkeep

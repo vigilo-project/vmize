@@ -1,0 +1,32 @@
+name: macOS CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      VM_QEMU_ACCEL: tcg
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install dependencies
+        run: brew install qemu xorriso wget openssh
+      - name: Run all tests
+        run: cargo test -- --nocapture
+      - name: Run Ollama integration test
+        env:
+          BATCH_OLLAMA_IT: "1"
+        run: cargo test run_in_out_with_ollama_prompt_collects_answer -- --nocapture

@@ -1,6 +1,10 @@
-# vm-lab
+# VMize
 
-Cargo workspace for VM automation tooling.
+> Turn tasks into VMs.
+>
+> Give every script its own machine.
+
+VMize batches, isolates, and executes your workloads inside ephemeral virtual machines, leaving your host untouched.
 
 ## Crates
 
@@ -9,20 +13,23 @@ Cargo workspace for VM automation tooling.
 A CLI tool for creating and managing Ubuntu Cloud Image VMs via QEMU.
 Handles the full VM lifecycle: image download, cloud-init setup, QEMU process management, and SSH access.
 
-### [`vm-batch`](./vm-batch)
+### [`batch`](./batch)
 
-A CLI tool that runs jobs inside ephemeral VMs, built on top of `vm`.
-A **job** is a named bundle of shell scripts declared in a JSON file, executed sequentially inside a fresh VM, with output collected back to the host.
+A CLI task runner built on top of `vm`.
+A **job** is a named bundle of shell scripts declared in JSON, executed inside a fresh VM, with outputs copied back to the host.
+
+### [`dashboard`](./dashboard)
+
+A web control plane for running and observing `batch` jobs.
+It provides queueing, live progress, and API-driven orchestration without requiring a TTY.
 
 ### [`jobs`](./jobs)
 
-Shared job directories consumed by `vm-batch` (for example `runc`, `runc-llama`, `ollama`).
+Shared job directories consumed by `batch` (for example `runc`, `runc-llama`, `ollama`).
 
 ## Dependency chain
 
-```
-vm-batch → vm → QEMU/KVM (Linux) / HVF (macOS)
-```
+`dashboard → batch → vm → QEMU/KVM (Linux) / HVF (macOS)`
 
 ## Quick start: vm
 
@@ -32,23 +39,28 @@ cargo build --release
 ./vm/target/release/vm run
 ```
 
-## Quick start: vm-batch
+## Quick start: batch
 
 ```bash
 cargo build --release
-./target/release/vm-batch vm-batch/example/job1        # Runs one example job
-./target/release/vm-batch jobs/runc-llama              # Runs shared runc-llama job
+./target/release/batch batch/example/job1  # Run one example job
+./target/release/batch jobs/runc-llama     # Run a shared runc-llama job
+```
+
+## Quick start: dashboard
+
+```bash
+cargo build --release
+./target/release/dashboard --port 8080
 ```
 
 ## Structure
 
 ```
-vm-lab/
-├── Cargo.toml     # workspace root
-├── vm/            # submodule — vigilo-project/vm
-├── vm-batch/      # submodule — vigilo-project/vm-batch
-├── vm-dashboard/  # workspace crate
-└── jobs/          # shared job directories (local, will become submodule later)
+vmize/
+├── Cargo.toml  # workspace root
+├── vm/         # workspace crate
+├── batch/      # workspace crate
+├── dashboard/  # workspace crate
+└── jobs/       # shared job directories
 ```
-
-> `vm` and `vm-batch` are independent git repositories managed as git submodules.

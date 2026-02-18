@@ -1,0 +1,4 @@
+{
+  "name": "split-job4",
+  "description": "Background runner loop with graceful stop after 7 seconds"
+}

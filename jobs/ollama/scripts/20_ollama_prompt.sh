@@ -50,10 +50,10 @@ if ! "$OLLAMA_BIN" list | awk 'NR > 1 {print $1}' | grep -Fxq "$MODEL"; then
     exit 2
 fi
 
-if ! timeout 120 "$OLLAMA_BIN" run "$MODEL" "$PROMPT" > /tmp/vm-batch/out/ollama-answer.txt 2> /tmp/vm-batch/out/ollama-error.txt; then
+if ! timeout 120 "$OLLAMA_BIN" run "$MODEL" "$PROMPT" > /tmp/batch/out/ollama-answer.txt 2> /tmp/batch/out/ollama-error.txt; then
     echo "ollama run failed for model: $MODEL" >&2
-    if [ -s /tmp/vm-batch/out/ollama-error.txt ]; then
-        cat /tmp/vm-batch/out/ollama-error.txt >&2
+    if [ -s /tmp/batch/out/ollama-error.txt ]; then
+        cat /tmp/batch/out/ollama-error.txt >&2
     fi
     exit 3
 fi

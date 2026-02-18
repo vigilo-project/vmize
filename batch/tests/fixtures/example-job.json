@@ -1,0 +1,7 @@
+{
+  "name": "example-batch",
+  "description": "Example job for testing",
+  "input": "example/scripts/print-result",
+  "output": "/tmp/example-output",
+  "disk_size": "20G"
+}
