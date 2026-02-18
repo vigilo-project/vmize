@@ -1,0 +1,6 @@
+[submodule "vm"]
+	path = vm
+	url = https://github.com/vigilo-project/vm.git
+[submodule "vm-batch"]
+	path = vm-batch
+	url = https://github.com/vigilo-project/vm-batch.git
