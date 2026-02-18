@@ -2,6 +2,7 @@
 members = [
     "vm",
     "vm-batch",
+    "vm-dashboard",
 ]
 resolver = "2"
 
