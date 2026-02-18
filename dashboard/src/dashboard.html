@@ -184,15 +184,35 @@
       text-overflow: ellipsis;
     }
 
-    .task-logs {
+    .log-section {
+      margin-top: 8px;
+    }
+
+    .log-title {
+      color: #6e7681;
+      font-size: 0.72em;
+      letter-spacing: 0.04em;
+      margin-bottom: 4px;
+    }
+
+    .log-panel {
       background: #010409;
       border: 1px solid #21262d;
       border-radius: 4px;
       padding: 6px 8px;
       font-size: 0.75em;
-      height: 58px;
-      overflow: hidden;
-      margin-top: 8px;
+      overflow-y: auto;
+      overflow-x: hidden;
+    }
+
+    .vm-progress-panel {
+      max-height: 90px;
+      min-height: 60px;
+    }
+
+    .script-output-panel {
+      max-height: 220px;
+      min-height: 120px;
     }
 
     .log-line {
@@ -250,7 +270,8 @@
             script_index:   j.script_index,
             script_total:   j.script_total,
             current_script: j.current_script,
-            logs:           Array.from(j.recent_logs || []),
+            vm_progress:    Array.from(j.vm_progress_lines || []),
+            script_logs:    Array.from(j.script_output_lines || []),
             elapsed_ms:     j.elapsed_ms,
             error:          j.error,
             output:         j.output,
@@ -283,7 +304,8 @@
               id: ev.id, dir: '', name: ev.name, description: ev.description,
               state: 'queued', phase: null,
               script_index: 0, script_total: 0, current_script: null,
-              logs: [], elapsed_ms: null, error: null, output: null,
+              vm_progress: [], script_logs: [],
+              elapsed_ms: null, error: null, output: null,
             };
             renderTask(ev.id);
             updateControls();
@@ -304,16 +326,20 @@
             tasks[ev.id].script_index   = ev.index;
             tasks[ev.id].script_total   = ev.total;
             tasks[ev.id].current_script = ev.done ? null : ev.name;
-            if (!ev.done) tasks[ev.id].logs = [];
             renderTask(ev.id);
           }
           break;
 
-        case 'log':
+        case 'vm_progress':
           if (tasks[ev.id]) {
-            tasks[ev.id].logs.push(ev.line);
-            if (tasks[ev.id].logs.length > 3)
-              tasks[ev.id].logs = tasks[ev.id].logs.slice(-3);
+            tasks[ev.id].vm_progress.push(ev.line);
+            renderTask(ev.id);
+          }
+          break;
+
+        case 'script_log':
+          if (tasks[ev.id]) {
+            tasks[ev.id].script_logs.push(ev.line);
             renderTask(ev.id);
           }
           break;
@@ -349,11 +375,26 @@
         container.appendChild(card);
       }
 
+      const prevVmPanel = card.querySelector('.vm-progress-panel');
+      const prevScriptPanel = card.querySelector('.script-output-panel');
+      const vmPinnedBottom = prevVmPanel
+        ? (prevVmPanel.scrollHeight - prevVmPanel.scrollTop - prevVmPanel.clientHeight) < 8
+        : true;
+      const scriptPinnedBottom = prevScriptPanel
+        ? (prevScriptPanel.scrollHeight - prevScriptPanel.scrollTop - prevScriptPanel.clientHeight) < 8
+        : true;
+      const prevVmScrollTop = prevVmPanel ? prevVmPanel.scrollTop : 0;
+      const prevScriptScrollTop = prevScriptPanel ? prevScriptPanel.scrollTop : 0;
+
       const stateLabels = { queued: 'QUEUED', running: 'RUNNING', succeeded: 'SUCCESS', failed: 'FAILED' };
       const pct = j.script_total > 0 ? Math.round(j.script_index / j.script_total * 100) : 0;
 
-      const logsHtml = j.logs.length > 0
-        ? j.logs.map(l => '<div class="log-line">' + esc(l) + '</div>').join('')
+      const vmProgressHtml = j.vm_progress.length > 0
+        ? j.vm_progress.map(l => '<div class="log-line">' + esc(l) + '</div>').join('')
+        : '<div class="log-line log-empty">no progress yet</div>';
+
+      const scriptLogsHtml = j.script_logs.length > 0
+        ? j.script_logs.map(l => '<div class="log-line">' + esc(l) + '</div>').join('')
         : '<div class="log-line log-empty">no output yet</div>';
 
       const showRemove = j.state === 'queued' && !running;
@@ -377,12 +418,36 @@
               : '') +
           '</div>' +
         '</div>' +
-        '<div class="task-logs">' + logsHtml + '</div>' +
+        '<div class="log-section">' +
+          '<div class="log-title">show_progress</div>' +
+          '<div class="log-panel vm-progress-panel">' + vmProgressHtml + '</div>' +
+        '</div>' +
+        '<div class="log-section">' +
+          '<div class="log-title">stdout/stderr</div>' +
+          '<div class="log-panel script-output-panel">' + scriptLogsHtml + '</div>' +
+        '</div>' +
         '<div class="task-footer">' +
           (j.elapsed_ms ? '<span>elapsed: ' + (j.elapsed_ms / 1000).toFixed(1) + 's</span>' : '') +
           (j.output ? '<div class="task-output">→ ' + esc(j.output) + '</div>' : '') +
           (j.error  ? '<div class="task-error">' + esc(j.error) + '</div>' : '') +
         '</div>';
+
+      const nextVmPanel = card.querySelector('.vm-progress-panel');
+      if (nextVmPanel) {
+        if (vmPinnedBottom) {
+          nextVmPanel.scrollTop = nextVmPanel.scrollHeight;
+        } else {
+          nextVmPanel.scrollTop = prevVmScrollTop;
+        }
+      }
+      const nextScriptPanel = card.querySelector('.script-output-panel');
+      if (nextScriptPanel) {
+        if (scriptPinnedBottom) {
+          nextScriptPanel.scrollTop = nextScriptPanel.scrollHeight;
+        } else {
+          nextScriptPanel.scrollTop = prevScriptScrollTop;
+        }
+      }
     }
 
     // ── Controls ──────────────────────────────────────────────────────────────

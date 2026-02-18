@@ -47,7 +47,8 @@ struct TaskEntry {
     script_index: usize,
     script_total: usize,
     current_script: Option<String>,
-    recent_logs: VecDeque<String>,
+    vm_progress_lines: Vec<String>,
+    script_output_lines: Vec<String>,
     elapsed_ms: Option<u64>,
     error: Option<String>,
     output: Option<String>,
@@ -215,7 +216,8 @@ async fn add_task(State(app): State<AppState>, Json(req): Json<AddTaskRequest>) 
         script_index: 0,
         script_total: 0,
         current_script: None,
-        recent_logs: VecDeque::new(),
+        vm_progress_lines: Vec::new(),
+        script_output_lines: Vec::new(),
         elapsed_ms: None,
         error: None,
         output: None,
@@ -431,7 +433,6 @@ fn forward_progress(id: usize, progress: &RunProgress, app: &AppState) {
                 task.current_script = Some(script.clone());
                 task.script_index = *index;
                 task.script_total = *total;
-                task.recent_logs.clear();
             }
             serde_json::json!({
                 "type": "script",
@@ -462,14 +463,18 @@ fn forward_progress(id: usize, progress: &RunProgress, app: &AppState) {
             })
         }
 
-        RunProgress::LogLine { line } => {
+        RunProgress::VmProgressLine { line } => {
             if let Some(task) = s.tasks.iter_mut().find(|j| j.id == id) {
-                if task.recent_logs.len() >= 10 {
-                    task.recent_logs.pop_front();
-                }
-                task.recent_logs.push_back(line.clone());
+                task.vm_progress_lines.push(line.clone());
             }
-            serde_json::json!({"type": "log", "id": id, "line": line})
+            serde_json::json!({"type": "vm_progress", "id": id, "line": line})
+        }
+
+        RunProgress::ScriptOutputLine { line } => {
+            if let Some(task) = s.tasks.iter_mut().find(|j| j.id == id) {
+                task.script_output_lines.push(line.clone());
+            }
+            serde_json::json!({"type": "script_log", "id": id, "line": line})
         }
     };
 
@@ -512,7 +517,8 @@ mod tests {
             script_index: 0,
             script_total: 0,
             current_script: None,
-            recent_logs: VecDeque::new(),
+            vm_progress_lines: Vec::new(),
+            script_output_lines: Vec::new(),
             elapsed_ms: None,
             error: None,
             output: None,
@@ -647,12 +653,13 @@ mod tests {
     }
 
     #[test]
-    fn forward_progress_script_started_clears_logs_and_sets_current() {
+    fn forward_progress_script_started_keeps_logs_and_sets_current() {
         let (app, _rx) = make_app();
         {
             let mut s = app.state.write().unwrap();
             let mut task = make_task(0, TaskState::Running);
-            task.recent_logs.push_back("old log".to_string());
+            task.vm_progress_lines.push("vm progress".to_string());
+            task.script_output_lines.push("script output".to_string());
             s.tasks.push(task);
         }
 
@@ -667,9 +674,13 @@ mod tests {
         );
 
         let s = app.state.read().unwrap();
-        assert!(
-            s.tasks[0].recent_logs.is_empty(),
-            "logs must be cleared on ScriptStarted"
+        assert_eq!(
+            s.tasks[0].vm_progress_lines,
+            vec!["vm progress".to_string()]
+        );
+        assert_eq!(
+            s.tasks[0].script_output_lines,
+            vec!["script output".to_string()]
         );
         assert_eq!(s.tasks[0].current_script, Some("10_build.sh".to_string()));
         assert_eq!(s.tasks[0].script_index, 1);
@@ -703,8 +714,8 @@ mod tests {
     }
 
     #[test]
-    fn forward_progress_log_line_appends_and_caps_at_ten() {
-        let (app, _rx) = make_app();
+    fn forward_progress_vm_progress_line_appends_without_cap() {
+        let (app, mut rx) = make_app();
         {
             let mut s = app.state.write().unwrap();
             s.tasks.push(make_task(0, TaskState::Running));
@@ -713,7 +724,7 @@ mod tests {
         for i in 0..12usize {
             forward_progress(
                 0,
-                &RunProgress::LogLine {
+                &RunProgress::VmProgressLine {
                     line: format!("line {i}"),
                 },
                 &app,
@@ -721,17 +732,53 @@ mod tests {
         }
 
         let s = app.state.read().unwrap();
-        assert_eq!(s.tasks[0].recent_logs.len(), 10, "must cap at 10 entries");
+        assert_eq!(s.tasks[0].vm_progress_lines.len(), 12);
         assert_eq!(
-            s.tasks[0].recent_logs.front().unwrap(),
-            "line 2",
-            "oldest surviving entry should be line 2"
+            s.tasks[0].vm_progress_lines.first().unwrap(),
+            "line 0",
+            "first entry should be preserved"
         );
         assert_eq!(
-            s.tasks[0].recent_logs.back().unwrap(),
+            s.tasks[0].vm_progress_lines.last().unwrap(),
             "line 11",
             "newest entry should be line 11"
         );
+        let evt: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+        assert_eq!(evt["type"], "vm_progress");
+    }
+
+    #[test]
+    fn forward_progress_script_output_line_appends_without_cap() {
+        let (app, mut rx) = make_app();
+        {
+            let mut s = app.state.write().unwrap();
+            s.tasks.push(make_task(0, TaskState::Running));
+        }
+
+        for i in 0..12usize {
+            forward_progress(
+                0,
+                &RunProgress::ScriptOutputLine {
+                    line: format!("output {i}"),
+                },
+                &app,
+            );
+        }
+
+        let s = app.state.read().unwrap();
+        assert_eq!(s.tasks[0].script_output_lines.len(), 12);
+        assert_eq!(
+            s.tasks[0].script_output_lines.first().unwrap(),
+            "output 0",
+            "first entry should be preserved"
+        );
+        assert_eq!(
+            s.tasks[0].script_output_lines.last().unwrap(),
+            "output 11",
+            "newest entry should be output 11"
+        );
+        let evt: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+        assert_eq!(evt["type"], "script_log");
     }
 
     #[test]

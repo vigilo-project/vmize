@@ -53,7 +53,10 @@ pub enum RunProgress {
         index: usize,
         total: usize,
     },
-    LogLine {
+    VmProgressLine {
+        line: String,
+    },
+    ScriptOutputLine {
         line: String,
     },
 }
@@ -104,7 +107,7 @@ where
     let on_progress: vm_crate::ProgressCallback = progress_tx.as_ref().map(|tx| {
         let tx = tx.clone();
         Box::new(move |step: u8, total: u8, msg: &str| {
-            let _ = tx.send(RunProgress::LogLine {
+            let _ = tx.send(RunProgress::VmProgressLine {
                 line: format!("[{step}/{total}] {msg}"),
             });
         }) as Box<dyn Fn(u8, u8, &str) + Send>
@@ -234,7 +237,7 @@ fn execute_scripts(
         let progress_tx_for_logs = progress_tx.clone();
         let stream_result = ssh_stream_command_with_logs(record, &command, |line| {
             if let Some(tx) = &progress_tx_for_logs {
-                let _ = tx.send(RunProgress::LogLine { line });
+                let _ = tx.send(RunProgress::ScriptOutputLine { line });
             } else {
                 println!("{line}");
             }
