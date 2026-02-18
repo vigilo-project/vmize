@@ -5,11 +5,12 @@ This repository is a Cargo workspace (`Cargo.toml`) with three crates:
 - `vm/` (git submodule): CLI for creating/managing Ubuntu cloud-image VMs via QEMU.
 - `vm-batch/` (git submodule): runs job directories inside ephemeral VMs.
 - `vm-dashboard/`: axum-based web UI for running `vm-batch` jobs.
+- `jobs/`: shared job directories (`job.json`, `scripts/`, `output/`) used by `vm-batch`.
 
 Key paths:
 - `vm/src/`, `vm-batch/src/`, `vm-dashboard/src/`: crate source code.
 - `vm/tests/`, `vm-batch/tests/`, `vm-dashboard/tests/`: integration tests.
-- `vm-batch/example/` and `vm-batch/jobs/`: job fixtures.
+- `vm-batch/example/` and `jobs/`: job fixtures and workflows.
 
 Keep generated build artifacts out of review scope (for example `target/`).
 

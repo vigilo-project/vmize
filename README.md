@@ -14,6 +14,10 @@ Handles the full VM lifecycle: image download, cloud-init setup, QEMU process ma
 A CLI tool that runs jobs inside ephemeral VMs, built on top of `vm`.
 A **job** is a named bundle of shell scripts declared in a JSON file, executed sequentially inside a fresh VM, with output collected back to the host.
 
+### [`jobs`](./jobs)
+
+Shared job directories consumed by `vm-batch` (for example `runc`, `runc-llama`, `ollama`).
+
 ## Dependency chain
 
 ```
@@ -32,7 +36,8 @@ cargo build --release
 
 ```bash
 cargo build --release
-./vm-batch/target/release/vm-batch example/job1.json  # Spins up a VM automatically
+./target/release/vm-batch vm-batch/example/job1        # Runs one example job
+./target/release/vm-batch jobs/runc-llama              # Runs shared runc-llama job
 ```
 
 ## Structure
@@ -41,7 +46,9 @@ cargo build --release
 vm-lab/
 ├── Cargo.toml     # workspace root
 ├── vm/            # submodule — vigilo-project/vm
-└── vm-batch/      # submodule — vigilo-project/vm-batch
+├── vm-batch/      # submodule — vigilo-project/vm-batch
+├── vm-dashboard/  # workspace crate
+└── jobs/          # shared job directories (local, will become submodule later)
 ```
 
 > `vm` and `vm-batch` are independent git repositories managed as git submodules.

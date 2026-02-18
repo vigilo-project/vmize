@@ -1,0 +1,5 @@
+{
+  "name": "runc-llama-bundle",
+  "description": "Run Ubuntu minimal OCI via runc, build and run llama.cpp with mounted GGUF model, and export replay bundle",
+  "disk_size": "20G"
+}

@@ -1,0 +1,5 @@
+{
+  "name": "runc-oci-bundle",
+  "description": "Build and run an OCI container bundle using runc inside the VM",
+  "disk_size": "20G"
+}
