@@ -1,5 +1,0 @@
-{
-  "name": "job2-print-only",
-  "description": "Print a message with no result script (minimal job)",
-  "disk_size": "20G"
-}

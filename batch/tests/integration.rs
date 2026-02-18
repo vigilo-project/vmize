@@ -6,14 +6,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use batch::{run_in_out_blocking, run_in_out_blocking_with, RunInOutOptions};
 
 #[derive(Debug)]
-struct JobExpectation {
+struct TaskExpectation {
     name: &'static str,
     output_dir: PathBuf,
-    job_file: PathBuf,
+    task_file: PathBuf,
     required_outputs: Vec<&'static str>,
 }
 
-fn expect_job_outputs(expectation: &JobExpectation) {
+fn expect_task_outputs(expectation: &TaskExpectation) {
     let missing: Vec<&'static str> = expectation
         .required_outputs
         .iter()
@@ -23,20 +23,20 @@ fn expect_job_outputs(expectation: &JobExpectation) {
 
     assert!(
         missing.is_empty(),
-        "job '{}' did not produce expected outputs in {:?}: {:?}",
+        "task '{}' did not produce expected outputs in {:?}: {:?}",
         expectation.name,
         expectation.output_dir,
         missing
     );
 }
 
-fn failed_job_from_output(output: &str, jobs: &[JobExpectation]) -> Option<String> {
-    for job in jobs {
-        if output.contains(&format!("Failed to execute {}", job.name)) {
-            return Some(job.name.to_string());
+fn failed_task_from_output(output: &str, tasks: &[TaskExpectation]) -> Option<String> {
+    for task in tasks {
+        if output.contains(&format!("Failed to execute {}", task.name)) {
+            return Some(task.name.to_string());
         }
-        if output.contains(&format!("Failed to load job {}", job.job_file.display())) {
-            return Some(job.name.to_string());
+        if output.contains(&format!("Failed to load task {}", task.task_file.display())) {
+            return Some(task.name.to_string());
         }
     }
     None
@@ -71,7 +71,7 @@ fn fixture_simple_output_dir(label: &str) -> PathBuf {
     output_dir
 }
 
-fn fixture_job_path(filename: &str) -> PathBuf {
+fn fixture_task_path(filename: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("example")
         .join(filename)
@@ -115,7 +115,7 @@ fn collect_shell_scripts(dir: &Path, out: &mut Vec<PathBuf>) {
 
 #[test]
 fn run_in_out_with_example_scripts_collects_outputs() {
-    let input_dir = fixture_input_dir(&["00_print.sh", "10_result.sh"], "example/job1/scripts");
+    let input_dir = fixture_input_dir(&["00_print.sh", "10_result.sh"], "example/task1/scripts");
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_else(|_| Default::default());
@@ -158,7 +158,7 @@ fn run_in_out_with_ollama_prompt_collects_answer() {
         return;
     }
 
-    let input_dir = fixture_input_dir(&["20_ollama_prompt.sh"], "../jobs/ollama/scripts");
+    let input_dir = fixture_input_dir(&["20_ollama_prompt.sh"], "../tasks/ollama/scripts");
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_else(|_| Default::default());
@@ -211,25 +211,25 @@ fn run_in_out_with_ollama_prompt_collects_answer() {
 }
 
 #[test]
-fn run_batch_cli_with_two_jobs() {
-    let job1 = fixture_job_path("job1");
-    let job2 = fixture_job_path("job2");
+fn run_batch_cli_with_two_tasks() {
+    let task1 = fixture_task_path("task1");
+    let task2 = fixture_task_path("task2");
     let batch_bin = batch_bin_path();
 
     let result = Command::new(batch_bin)
-        .arg(job1.as_os_str())
-        .arg(job2.as_os_str())
+        .arg(task1.as_os_str())
+        .arg(task2.as_os_str())
         .output()
         .expect("failed to execute batch binary");
 
     let io = String::from_utf8_lossy(&result.stdout);
     let err = String::from_utf8_lossy(&result.stderr);
     let combined = format!("{io}{err}");
-    let jobs = [
-        JobExpectation {
-            name: "job1-print-result",
-            output_dir: job1.join("output"),
-            job_file: job1.clone(),
+    let tasks = [
+        TaskExpectation {
+            name: "task1-print-result",
+            output_dir: task1.join("output"),
+            task_file: task1.clone(),
             required_outputs: vec![
                 "00_print.sh.log",
                 "10_result.sh.log",
@@ -237,59 +237,60 @@ fn run_batch_cli_with_two_jobs() {
                 "result.txt",
             ],
         },
-        JobExpectation {
-            name: "job2-print-only",
-            output_dir: job2.join("output"),
-            job_file: job2.clone(),
+        TaskExpectation {
+            name: "task2-print-only",
+            output_dir: task2.join("output"),
+            task_file: task2.clone(),
             required_outputs: vec!["00_print.sh.log", "hello.txt"],
         },
     ];
 
     if !result.status.success() {
-        let failed_job = failed_job_from_output(&combined, &jobs)
+        let failed_task = failed_task_from_output(&combined, &tasks)
             .or_else(|| {
-                jobs.iter()
-                    .find(|job| !job.output_dir.join("00_print.sh.log").exists())
-                    .map(|job| job.name.to_string())
+                tasks
+                    .iter()
+                    .find(|task| !task.output_dir.join("00_print.sh.log").exists())
+                    .map(|task| task.name.to_string())
             })
-            .unwrap_or_else(|| "unknown job".to_string());
+            .unwrap_or_else(|| "unknown task".to_string());
         panic!(
-            "batch failed at: {failed_job}\nstatus: {:?}\nstdout: {io}\nstderr: {err}",
+            "batch failed at: {failed_task}\nstatus: {:?}\nstdout: {io}\nstderr: {err}",
             result.status
         );
     }
 
     assert!(
-        combined.contains("Running job: job1-print-result")
-            && combined.contains("Running job: job2-print-only")
+        combined.contains("Running task: task1-print-result")
+            && combined.contains("Running task: task2-print-only")
     );
 
-    jobs.iter().for_each(expect_job_outputs);
+    tasks.iter().for_each(expect_task_outputs);
 }
 
 #[test]
-fn run_batch_concurrent_rejects_more_than_four_jobs() {
+fn run_batch_concurrent_rejects_more_than_four_tasks() {
     let batch_bin = batch_bin_path();
-    let job = fixture_job_path("job1");
+    let task = fixture_task_path("task1");
 
     let result = Command::new(batch_bin)
         .arg("--concurrent")
-        .arg(job.as_os_str())
-        .arg(job.as_os_str())
-        .arg(job.as_os_str())
-        .arg(job.as_os_str())
-        .arg(job.as_os_str())
+        .arg(task.as_os_str())
+        .arg(task.as_os_str())
+        .arg(task.as_os_str())
+        .arg(task.as_os_str())
+        .arg(task.as_os_str())
         .output()
         .expect("failed to execute batch binary");
 
     assert!(
         !result.status.success(),
-        "--concurrent with >4 jobs must fail"
+        "--concurrent with >4 tasks must fail"
     );
     let stderr = String::from_utf8_lossy(&result.stderr);
     assert!(
-        stderr.contains("--concurrent supports up to 4 jobs"),
-        "stderr did not contain max-jobs error: {stderr}"
+        stderr.contains("--concurrent supports up to 4 tasks"),
+        "stderr did not contain max-tasks error: {stderr}"
     );
 }
 
@@ -314,8 +315,7 @@ fn run_batch_no_args_prints_usage_and_exits_nonzero() {
 
 #[test]
 fn all_example_shell_scripts_pass_bash_n() {
-    let scripts_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("example");
+    let scripts_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("example");
     let mut scripts = Vec::new();
     collect_shell_scripts(&scripts_root, &mut scripts);
     scripts.sort();

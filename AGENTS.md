@@ -6,19 +6,19 @@ VMize turns tasks into VMs. Each workload runs inside an ephemeral machine so ho
 ## Project Structure & Module Organization
 This repository is a Cargo workspace (`Cargo.toml`) with three crates:
 - `vm/`: CLI for creating/managing Ubuntu cloud-image VMs via QEMU.
-- `batch/`: runs job directories inside ephemeral VMs.
-- `dashboard/`: axum-based web UI for running `batch` jobs.
-- `jobs/`: shared job directories (`job.json`, `scripts/`, `output/`) used by `batch`.
+- `batch/`: runs task directories inside ephemeral VMs.
+- `dashboard/`: axum-based web UI for running `batch` tasks.
+- `tasks/`: shared task directories (`task.json`, `scripts/`, `output/`) used by `batch`.
 
 Key paths:
 - `vm/src/`, `batch/src/`, `dashboard/src/`: crate source code.
 - `vm/tests/`, `batch/tests/`, `dashboard/tests/`: integration tests.
-- `batch/example/` and `jobs/`: job fixtures and workflows.
+- `batch/example/` and `tasks/`: task fixtures and workflows.
 
 Keep generated build artifacts out of review scope (for example `target/`).
 
 ## Dashboard MVP Priority
-For any change in `dashboard/` (UI, API, job execution flow, SSE), treat `dashboard/AGENTS.md` as the release gate. A dashboard PR is not complete unless it satisfies the full MVP criteria there (browser UX + API behavior + SSE reconnect replay).
+For any change in `dashboard/` (UI, API, task execution flow, SSE), treat `dashboard/AGENTS.md` as the release gate. A dashboard PR is not complete unless it satisfies the full MVP criteria there (browser UX + API behavior + SSE reconnect replay).
 
 ## Build, Test, and Development Commands
 - `cargo build --release`: builds all crates.
@@ -26,7 +26,7 @@ For any change in `dashboard/` (UI, API, job execution flow, SSE), treat `dashbo
 - `cargo test --lib --bin batch -p batch`: fast `batch` tests (no VM boot).
 - `cargo test --test api -p dashboard`: dashboard HTTP/API integration tests (no QEMU).
 - `cargo test --lib -p dashboard`: dashboard unit tests only.
-- `DASHBOARD_IT=1 cargo test --test api run_api_run_job_succeeds -p dashboard -- --nocapture`: dashboard end-to-end VM test.
+- `DASHBOARD_IT=1 cargo test --test api run_api_run_task_succeeds -p dashboard -- --nocapture`: dashboard end-to-end VM test.
 - `BATCH_OLLAMA_IT=1 cargo test run_in_out_with_ollama_prompt_collects_answer --test integration -p batch -- --nocapture`: opt-in Ollama integration.
 - `(cd vm && ./deps.sh)`: install host deps and download Ubuntu image cache.
 

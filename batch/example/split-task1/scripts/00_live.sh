@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-job="split-job1"
+task="split-task1"
 declare -a board=(1 2 3 4 5 6 7 8 9)
 
 declare -a lines=(
@@ -11,10 +11,10 @@ declare -a lines=(
 )
 
 print_board() {
-  echo "[$job] board"
-  echo "[$job] ${board[0]} | ${board[1]} | ${board[2]}"
-  echo "[$job] ${board[3]} | ${board[4]} | ${board[5]}"
-  echo "[$job] ${board[6]} | ${board[7]} | ${board[8]}"
+  echo "[$task] board"
+  echo "[$task] ${board[0]} | ${board[1]} | ${board[2]}"
+  echo "[$task] ${board[3]} | ${board[4]} | ${board[5]}"
+  echo "[$task] ${board[6]} | ${board[7]} | ${board[8]}"
 }
 
 is_winner() {
@@ -54,12 +54,12 @@ while [[ $turn -lt 9 ]]; do
   pos="${slots[$pick_index]}"
   board[$pos]="$mark"
 
-  echo "[$job] turn $((turn + 1)): $player plays $mark at cell $((pos + 1))"
+  echo "[$task] turn $((turn + 1)): $player plays $mark at cell $((pos + 1))"
   print_board
 
   if is_winner "$mark"; then
     winner="$player($mark)"
-    echo "[$job] winner decided: $winner"
+    echo "[$task] winner decided: $winner"
     break
   fi
 
@@ -67,5 +67,5 @@ while [[ $turn -lt 9 ]]; do
   sleep 1
 done
 
-echo "winner=$winner" > /tmp/batch/out/${job}.txt
-echo "[$job] saved result to /tmp/batch/out/${job}.txt"
+echo "winner=$winner" > /tmp/batch/out/${task}.txt
+echo "[$task] saved result to /tmp/batch/out/${task}.txt"

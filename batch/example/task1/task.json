@@ -1,4 +1,4 @@
 {
-  "name": "job1-print-result",
+  "name": "task1-print-result",
   "description": "Print a message and write output files to verify basic pipeline"
 }

@@ -1,73 +1,73 @@
 # batch
 
 `batch` is VMize's task execution engine.
-It runs **jobs** inside ephemeral VMs so each task gets an isolated machine and host state remains untouched.
+It runs **tasks** inside ephemeral VMs so each task gets an isolated machine and host state remains untouched.
 
-Built on top of [`vm`](https://github.com/vigilo-project/vm), `batch` adds the job abstraction: a self-contained directory with a `job.json` definition, a `scripts/` input directory, and an `output/` directory for results.
+Built on top of [`vm`](https://github.com/vigilo-project/vm), `batch` adds the task abstraction: a self-contained directory with a `task.json` definition, a `scripts/` input directory, and an `output/` directory for results.
 
-In the `vmize` workspace, shared curated jobs live in `../jobs/` from this crate directory.
+In the `vmize` workspace, shared curated tasks live in `../tasks/` from this crate directory.
 
 ## Quick Start
 
 ```bash
 cargo build --release
 
-# Run a single job (directory-based)
-./target/release/batch example/job1
+# Run a single task (directory-based)
+./target/release/batch example/task1
 
-# Run multiple jobs sequentially
-./target/release/batch example/job1 example/job2
+# Run multiple tasks sequentially
+./target/release/batch example/task1 example/task2
 
-# Run up to 4 jobs concurrently (no TTY required)
+# Run up to 4 tasks concurrently (no TTY required)
 ./target/release/batch --concurrent \
-  example/split-job1 \
-  example/split-job2 \
-  example/split-job3 \
-  example/split-job4
+  example/split-task1 \
+  example/split-task2 \
+  example/split-task3 \
+  example/split-task4
 
 # Build/run baseline Ubuntu-minimal OCI bundle with runc
-./target/release/batch ../jobs/runc
+./target/release/batch ../tasks/runc
 
 # Build/run Ubuntu-minimal OCI with runc + llama.cpp + mounted GGUF model,
 # then export a replay bundle
-./target/release/batch ../jobs/runc-llama
+./target/release/batch ../tasks/runc-llama
 ```
 
-The `../jobs/runc-llama` workflow writes to `../jobs/runc-llama/output/`:
+The `../tasks/runc-llama` workflow writes to `../tasks/runc-llama/output/`:
 - `llama-answer.txt` (prompt output)
 - `runc-llama-replay.tar.xz`
   (single replay bundle with `rootfs.tar.xz`, `config.template.json`, model, and `run-from-output.sh`)
 
 ### runc-llama local model flow
 
-`../jobs/runc-llama/scripts/10_build_bundle.sh` resolves the model source in this order:
+`../tasks/runc-llama/scripts/10_build_bundle.sh` resolves the model source in this order:
 1. `LOCAL_MODEL_PATH` (if set and the file exists inside the VM)
-2. First `*.gguf` under `../jobs/runc-llama/scripts/models/`
+2. First `*.gguf` under `../tasks/runc-llama/scripts/models/`
 3. Download from `LLAMA_MODEL_URL` or built-in fallback URLs
 
 Example (recommended to avoid network flakiness):
 
 ```bash
-mkdir -p ../jobs/runc-llama/scripts/models
+mkdir -p ../tasks/runc-llama/scripts/models
 curl -L -C - \
-  -o ../jobs/runc-llama/scripts/models/qwen2.5-0.5b-instruct-q2_k.gguf \
+  -o ../tasks/runc-llama/scripts/models/qwen2.5-0.5b-instruct-q2_k.gguf \
   https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q2_k.gguf
 
-./target/release/batch ../jobs/runc-llama
+./target/release/batch ../tasks/runc-llama
 ```
 
-## Job Directory Structure
+## Task Directory Structure
 
-A job is a self-contained directory:
+A task is a self-contained directory:
 
 ```
-<job-dir>/
-├── job.json     # name, description, disk_size
+<task-dir>/
+├── task.json     # name, description, disk_size
 ├── scripts/     # Shell scripts executed alphabetically (00_, 10_, ...)
 └── output/      # Results collected here after VM run
 ```
 
-### job.json Fields
+### task.json Fields
 
 ```json
 {
@@ -80,7 +80,7 @@ A job is a self-contained directory:
 | Field | Required | Description |
 |-------|----------|-------------|
 | `name` | no | Human-readable label |
-| `description` | no | What this job does (shown in logs) |
+| `description` | no | What this task does (shown in logs) |
 | `disk_size` | no | VM disk size override |
 
 ## How It Works

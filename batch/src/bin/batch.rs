@@ -4,100 +4,98 @@ use std::thread;
 
 use clap::Parser;
 
-use batch::job::load_job;
+use batch::task::load_task;
 use batch::{run_in_out_blocking_with, Error, RunInOutOptions};
 
-const MAX_CONCURRENT_JOBS: usize = 4;
+const MAX_CONCURRENT_TASKS: usize = 4;
 
 #[derive(Debug, Parser)]
 #[command(name = "batch")]
-#[command(about = "Run one or more VM jobs described by a job directory")]
+#[command(about = "Run one or more VM tasks described by a task directory")]
 struct Cli {
-    #[arg(long, help = "Run all jobs concurrently (max 4)")]
+    #[arg(long, help = "Run all tasks concurrently (max 4)")]
     concurrent: bool,
 
-    #[arg(value_name = "JOB_DIR")]
-    jobs: Vec<PathBuf>,
+    #[arg(value_name = "TASK_DIR")]
+    tasks: Vec<PathBuf>,
 }
 
 fn main() {
     let cli = Cli::parse();
 
-    if cli.jobs.is_empty() {
-        eprintln!("Usage: batch <job-dir> [job-dir ...]");
+    if cli.tasks.is_empty() {
+        eprintln!("Usage: batch <task-dir> [task-dir ...]");
         process::exit(1);
     }
 
     if cli.concurrent {
-        run_concurrent(&cli.jobs);
+        run_concurrent(&cli.tasks);
         return;
     }
 
-    run_sequential(&cli.jobs);
+    run_sequential(&cli.tasks);
 }
 
-fn run_sequential(jobs: &[PathBuf]) {
-    for (idx, job_path) in jobs.iter().enumerate() {
-        let (job, input, output) = match load_job(job_path) {
+fn run_sequential(tasks: &[PathBuf]) {
+    for (idx, task_path) in tasks.iter().enumerate() {
+        let (task, input, output) = match load_task(task_path) {
             Ok(t) => t,
             Err(err) => {
-                eprintln!("Failed to load job {}: {err}", job_path.display());
+                eprintln!("Failed to load task {}: {err}", task_path.display());
                 process::exit(1);
             }
         };
 
-        let job_name = job
+        let task_name = task
             .name
             .clone()
-            .unwrap_or_else(|| format!("job-{}", idx + 1));
-        if let Some(desc) = &job.description {
-            eprintln!("Running job: {job_name} — {desc}");
+            .unwrap_or_else(|| format!("task-{}", idx + 1));
+        if let Some(desc) = &task.description {
+            eprintln!("Running task: {task_name} — {desc}");
         } else {
-            eprintln!("Running job: {job_name} ({})", job_path.display());
+            eprintln!("Running task: {task_name} ({})", task_path.display());
         }
 
         let options = RunInOutOptions {
-            disk_size: job.disk_size,
+            disk_size: task.disk_size,
             ..Default::default()
         };
         if let Err(err) = run_in_out_blocking_with(&input, &output, options) {
-            eprintln!("{}", format_job_error(&job_name, err));
+            eprintln!("{}", format_task_error(&task_name, err));
             process::exit(1);
         }
     }
 }
 
-fn run_concurrent(jobs: &[PathBuf]) {
-    if jobs.len() > MAX_CONCURRENT_JOBS {
+fn run_concurrent(tasks: &[PathBuf]) {
+    if tasks.len() > MAX_CONCURRENT_TASKS {
         eprintln!(
-            "--concurrent supports up to {MAX_CONCURRENT_JOBS} jobs, but {} were provided",
-            jobs.len()
+            "--concurrent supports up to {MAX_CONCURRENT_TASKS} tasks, but {} were provided",
+            tasks.len()
         );
         process::exit(1);
     }
 
-    let handles: Vec<_> = jobs
+    let handles: Vec<_> = tasks
         .iter()
         .cloned()
         .enumerate()
-        .map(|(idx, job_path)| {
+        .map(|(idx, task_path)| {
             thread::Builder::new()
-                .name(format!("batch-job-{idx}"))
+                .name(format!("batch-task-{idx}"))
                 .spawn(move || -> Result<(), String> {
-                    let (job, input, output) = load_job(&job_path)?;
-                    let name = job
-                        .name
-                        .unwrap_or_else(|| job_path.display().to_string());
+                    let (task, input, output) = load_task(&task_path)?;
+                    let name = task.name.unwrap_or_else(|| task_path.display().to_string());
                     eprintln!("[start] {name}");
                     run_in_out_blocking_with(
                         &input,
                         &output,
                         RunInOutOptions {
-                            disk_size: job.disk_size,
+                            disk_size: task.disk_size,
                             ..Default::default()
                         },
                     )
-                    .map_err(|e| format_job_error(&name, e))?;
+                    .map_err(|e| format_task_error(&name, e))?;
                     eprintln!("[done]  {name} -> {}", output.display());
                     Ok(())
                 })
@@ -120,6 +118,6 @@ fn run_concurrent(jobs: &[PathBuf]) {
     }
 }
 
-fn format_job_error(job_name: &str, err: Error) -> String {
-    format!("Failed to execute {job_name}: {err}")
+fn format_task_error(task_name: &str, err: Error) -> String {
+    format!("Failed to execute {task_name}: {err}")
 }

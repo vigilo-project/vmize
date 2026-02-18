@@ -8,13 +8,13 @@ It replaces terminal-only execution views with a browser UI for queueing, live p
 The MVP is considered complete when all of the following pass end-to-end in a browser:
 
 1. **Start server** — `dashboard --port 8080` starts without error.
-2. **Add jobs** — entering a job directory path and clicking **Add** queues the job (validates `job.json` exists); shows name and description from `job.json`.
+2. **Add tasks** — entering a task directory path and clicking **Add** queues the task (validates `task.json` exists); shows name and description from `task.json`.
 3. **Reject bad paths** — adding a non-existent directory shows an error; the queue is unchanged.
-4. **Queue limit** — adding a 5th job is rejected with a clear error.
-5. **Remove jobs** — clicking **✕** on a queued job removes it before any run starts.
-6. **Run All** — clicking **Run All** starts all queued jobs in parallel and disables the button.
-7. **Live progress** — each job card updates in real time: phase badge, script `N/M`, last 3 log lines, elapsed time.
-8. **Completion** — succeeded jobs turn green with the output path; failed jobs turn red with the error.
+4. **Queue limit** — adding a 5th task is rejected with a clear error.
+5. **Remove tasks** — clicking **✕** on a queued task removes it before any run starts.
+6. **Run All** — clicking **Run All** starts all queued tasks in parallel and disables the button.
+7. **Live progress** — each task card updates in real time: phase badge, script `N/M`, last 3 log lines, elapsed time.
+8. **Completion** — succeeded tasks turn green with the output path; failed tasks turn red with the error.
 9. **Reconnect** — refreshing the browser restores the current state via `/api/status` and replays the last 100 SSE events.
 
 ## Quick Start
@@ -32,27 +32,27 @@ Open `http://localhost:8080` in a browser.
 ## UX Flow
 
 ```
-1. Enter job directory path → click Add (or press Enter)
-   └─ server reads job.json → shows name + description on the card
-2. Repeat for up to 4 jobs
+1. Enter task directory path → click Add (or press Enter)
+   └─ server reads task.json → shows name + description on the card
+2. Repeat for up to 4 tasks
 3. Click Run All
-   └─ all jobs start in parallel (each in its own OS thread)
+   └─ all tasks start in parallel (each in its own OS thread)
 4. Cards update in real time via Server-Sent Events
 5. Each card turns green (success) or red (failure) when done
 ```
 
-## Job Directory Structure
+## Task Directory Structure
 
-A job directory is the same format as `batch`:
+A task directory is the same format as `batch`:
 
 ```
-<job-dir>/
-├── job.json     # name, description, disk_size (all optional)
+<task-dir>/
+├── task.json     # name, description, disk_size (all optional)
 ├── scripts/     # Shell scripts executed alphabetically inside the VM
 └── output/      # Created automatically; results are collected here
 ```
 
-Example `job.json`:
+Example `task.json`:
 
 ```json
 {
@@ -68,20 +68,20 @@ Example `job.json`:
 |--------|------|-------------|
 | `GET` | `/` | Embedded HTML dashboard |
 | `GET` | `/events` | Server-Sent Events stream |
-| `GET` | `/api/status` | JSON snapshot of all jobs and `running` flag |
-| `POST` | `/api/jobs` | Add job — body: `{"dir": "/path/to/job"}` |
-| `DELETE` | `/api/jobs/{id}` | Remove a queued job by ID |
-| `POST` | `/api/run` | Start all queued jobs |
+| `GET` | `/api/status` | JSON snapshot of all tasks and `running` flag |
+| `POST` | `/api/tasks` | Add task — body: `{"dir": "/path/to/task"}` |
+| `DELETE` | `/api/tasks/{id}` | Remove a queued task by ID |
+| `POST` | `/api/run` | Start all queued tasks |
 
 ### Status codes
 
 | Code | Meaning |
 |------|---------|
-| 201 | Job added |
+| 201 | Task added |
 | 202 | Run started |
-| 204 | Job removed |
+| 204 | Task removed |
 | 400 | Bad request (invalid dir, empty queue, queue full) |
-| 404 | Job ID not found |
+| 404 | Task ID not found |
 | 409 | Conflict (already running) |
 
 ## SSE Event Format
@@ -110,5 +110,5 @@ cargo test --lib -p dashboard
 cargo test --test api -p dashboard
 
 # Full end-to-end (requires QEMU — actually runs a VM)
-DASHBOARD_IT=1 cargo test --test api run_api_run_job_succeeds -p dashboard -- --nocapture
+DASHBOARD_IT=1 cargo test --test api run_api_run_task_succeeds -p dashboard -- --nocapture
 ```

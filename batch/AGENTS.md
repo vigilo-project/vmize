@@ -9,7 +9,7 @@
 - `src/lib.rs` — public API surface
 - `src/runner.rs`, `src/result.rs`, `src/error.rs` — core logic
 - `tests/integration.rs` — end-to-end tests (require QEMU)
-- `example/` — sample job JSON files and input scripts
+- `example/` — sample task JSON files and input scripts
 
 ## Commands
 

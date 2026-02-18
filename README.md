@@ -16,16 +16,16 @@ Handles the full VM lifecycle: image download, cloud-init setup, QEMU process ma
 ### [`batch`](./batch)
 
 A CLI task runner built on top of `vm`.
-A **job** is a named bundle of shell scripts declared in JSON, executed inside a fresh VM, with outputs copied back to the host.
+A **task** is a named bundle of shell scripts declared in JSON, executed inside a fresh VM, with outputs copied back to the host.
 
 ### [`dashboard`](./dashboard)
 
-A web control plane for running and observing `batch` jobs.
+A web control plane for running and observing `batch` tasks.
 It provides queueing, live progress, and API-driven orchestration without requiring a TTY.
 
-### [`jobs`](./jobs)
+### [`tasks`](./tasks)
 
-Shared job directories consumed by `batch` (for example `runc`, `runc-llama`, `ollama`).
+Shared task directories consumed by `batch` (for example `runc`, `runc-llama`, `ollama`).
 
 ## Dependency chain
 
@@ -43,8 +43,8 @@ cargo build --release
 
 ```bash
 cargo build --release
-./target/release/batch batch/example/job1  # Run one example job
-./target/release/batch jobs/runc-llama     # Run a shared runc-llama job
+./target/release/batch batch/example/task1  # Run one example task
+./target/release/batch tasks/runc-llama     # Run a shared runc-llama task
 ```
 
 ## Quick start: dashboard
@@ -62,5 +62,5 @@ vmize/
 ├── vm/         # workspace crate
 ├── batch/      # workspace crate
 ├── dashboard/  # workspace crate
-└── jobs/       # shared job directories
+└── tasks/       # shared task directories
 ```

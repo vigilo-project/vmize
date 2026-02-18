@@ -2,7 +2,7 @@
 
 ## Project
 
-dashboard — VMize's axum-based web server for running `batch` jobs in parallel with real-time progress via Server-Sent Events.
+dashboard — VMize's axum-based web server for running `batch` tasks in parallel with real-time progress via Server-Sent Events.
 
 ## Commands
 
@@ -26,16 +26,16 @@ Everything lives in `src/main.rs` (single binary, no lib crate).
 ### Shared state
 
 ```
-Arc<RwLock<DashboardState>>   ← read/write from HTTP handlers and job threads
+Arc<RwLock<DashboardState>>   ← read/write from HTTP handlers and task threads
 Arc<broadcast::Sender<String>> ← SSE fan-out; also held by AppState (Clone)
 ```
 
 `AppState` is `Clone` (both fields are `Arc`) and is registered as axum `State`.
 
 `DashboardState` holds:
-- `jobs: Vec<JobEntry>` — ordered by insertion
+- `tasks: Vec<TaskEntry>` — ordered by insertion
 - `next_id: usize` — monotonic counter
-- `running: bool` — true while any job thread is alive
+- `running: bool` — true while any task thread is alive
 - `replay: VecDeque<String>` — last 100 SSE JSON strings for late subscribers
 
 `push_event(&mut self, tx, value)` serialises the JSON value, appends to `replay` (evicts oldest when full), and calls `tx.send()`.
@@ -51,14 +51,14 @@ The combined stream is boxed (`Pin<Box<dyn Stream<...>>>`) to unify the two conc
 
 ### Worker threading model
 
-`POST /api/run` spawns one `std::thread` per queued job (NOT `tokio::task::spawn_blocking`, to avoid `BlockingInAsyncContext` from `run_in_out_blocking_with_progress`).
+`POST /api/run` spawns one `std::thread` per queued task (NOT `tokio::task::spawn_blocking`, to avoid `BlockingInAsyncContext` from `run_in_out_blocking_with_progress`).
 
 Each worker thread:
-1. Loads job definition via `batch::job::load_job()`
+1. Loads task definition via `batch::task::load_task()`
 2. Spawns a second thread to forward `mpsc::Receiver<RunProgress>` → `broadcast::Sender<String>`
 3. Calls `run_in_out_blocking_with_progress()` (creates its own tokio runtime)
 4. Joins the forwarder thread
-5. Acquires write lock, updates `JobEntry` state, calls `push_event`, calls `maybe_clear_running`
+5. Acquires write lock, updates `TaskEntry` state, calls `push_event`, calls `maybe_clear_running`
 
 No deadlock is possible: the forwarder thread and main worker thread never hold the write lock simultaneously (worker joins forwarder before acquiring the final lock).
 
@@ -69,16 +69,16 @@ No deadlock is possible: the forwarder thread and main worker thread never hold 
 | `serve_dashboard` | `GET /` | `include_str!("dashboard.html")` |
 | `sse_handler` | `GET /events` | replay + live stream |
 | `get_status` | `GET /api/status` | read lock only |
-| `add_job` | `POST /api/jobs` | validates dir, creates JobEntry, push_event "loaded" |
-| `remove_job` | `DELETE /api/jobs/{id}` | axum 0.8 path syntax |
-| `run_jobs` | `POST /api/run` | sets running=true, spawns threads |
+| `add_task` | `POST /api/tasks` | validates dir, creates TaskEntry, push_event "loaded" |
+| `remove_task` | `DELETE /api/tasks/{id}` | axum 0.8 path syntax |
+| `run_tasks` | `POST /api/run` | sets running=true, spawns threads |
 
 ## Key types
 
 | Type | Description |
 |------|-------------|
-| `JobState` | `Queued \| Running \| Succeeded \| Failed` |
-| `JobEntry` | Per-job state including recent_logs (VecDeque, max 10) |
+| `TaskState` | `Queued \| Running \| Succeeded \| Failed` |
+| `TaskEntry` | Per-task state including recent_logs (VecDeque, max 10) |
 | `DashboardState` | Global state behind RwLock |
 | `AppState` | Cloneable axum state (SharedState + broadcast Sender) |
 

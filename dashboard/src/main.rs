@@ -19,17 +19,17 @@ use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
-use batch::job::load_job;
+use batch::task::load_task;
 use batch::{run_in_out_blocking_with_progress, RunInOutOptions, RunPhase, RunProgress};
 
-const MAX_QUEUE_JOBS: usize = 4;
+const MAX_QUEUE_TASKS: usize = 4;
 const SSE_REPLAY_CAPACITY: usize = 100;
 
 // ── CLI ──────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Parser)]
 #[command(name = "dashboard")]
-#[command(about = "Web dashboard for running VM batch jobs")]
+#[command(about = "Web dashboard for running VM batch tasks")]
 struct Cli {
     #[arg(long, default_value = "8080")]
     port: u16,
@@ -39,7 +39,7 @@ struct Cli {
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
-enum JobState {
+enum TaskState {
     Queued,
     Running,
     Succeeded,
@@ -47,12 +47,12 @@ enum JobState {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct JobEntry {
+struct TaskEntry {
     id: usize,
     dir: String,
     name: Option<String>,
     description: Option<String>,
-    state: JobState,
+    state: TaskState,
     phase: Option<String>,
     script_index: usize,
     script_total: usize,
@@ -64,7 +64,7 @@ struct JobEntry {
 }
 
 struct DashboardState {
-    jobs: Vec<JobEntry>,
+    tasks: Vec<TaskEntry>,
     next_id: usize,
     running: bool,
     /// Last N SSE event strings replayed to new subscribers.
@@ -74,7 +74,7 @@ struct DashboardState {
 impl DashboardState {
     fn new() -> Self {
         Self {
-            jobs: Vec::new(),
+            tasks: Vec::new(),
             next_id: 0,
             running: false,
             replay: VecDeque::with_capacity(SSE_REPLAY_CAPACITY),
@@ -102,7 +102,7 @@ struct AppState {
 // ── Request bodies ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
-struct AddJobRequest {
+struct AddTaskRequest {
     dir: String,
 }
 
@@ -122,9 +122,9 @@ async fn main() {
         .route("/", get(serve_dashboard))
         .route("/events", get(sse_handler))
         .route("/api/status", get(get_status))
-        .route("/api/jobs", post(add_job))
-        .route("/api/jobs/{id}", delete(remove_job))
-        .route("/api/run", post(run_jobs))
+        .route("/api/tasks", post(add_task))
+        .route("/api/tasks/{id}", delete(remove_task))
+        .route("/api/run", post(run_tasks))
         .with_state(app_state);
 
     let addr = format!("0.0.0.0:{}", cli.port);
@@ -137,16 +137,12 @@ async fn main() {
 
 async fn serve_dashboard() -> impl IntoResponse {
     (
-        [(
-            axum::http::header::CONTENT_TYPE,
-            "text/html; charset=utf-8",
-        )],
+        [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
         include_str!("dashboard.html"),
     )
 }
 
-type SseStream =
-    std::pin::Pin<Box<dyn futures::Stream<Item = Result<Event, Infallible>> + Send>>;
+type SseStream = std::pin::Pin<Box<dyn futures::Stream<Item = Result<Event, Infallible>> + Send>>;
 
 async fn sse_handler(State(app): State<AppState>) -> impl IntoResponse {
     let rx = app.sse_tx.subscribe();
@@ -178,35 +174,32 @@ async fn sse_handler(State(app): State<AppState>) -> impl IntoResponse {
 async fn get_status(State(app): State<AppState>) -> impl IntoResponse {
     let s = app.state.read().unwrap();
     Json(serde_json::json!({
-        "jobs": s.jobs,
+        "tasks": s.tasks,
         "running": s.running,
     }))
 }
 
-async fn add_job(
-    State(app): State<AppState>,
-    Json(req): Json<AddJobRequest>,
-) -> Response {
+async fn add_task(State(app): State<AppState>, Json(req): Json<AddTaskRequest>) -> Response {
     let mut s = app.state.write().unwrap();
 
     if s.running {
         return (
             StatusCode::CONFLICT,
-            Json(serde_json::json!({"error": "jobs are already running"})),
+            Json(serde_json::json!({"error": "tasks are already running"})),
         )
             .into_response();
     }
 
-    if s.jobs.len() >= MAX_QUEUE_JOBS {
+    if s.tasks.len() >= MAX_QUEUE_TASKS {
         return (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": format!("queue is full (max {MAX_QUEUE_JOBS})")})),
+            Json(serde_json::json!({"error": format!("queue is full (max {MAX_QUEUE_TASKS})")})),
         )
             .into_response();
     }
 
-    let job_dir = PathBuf::from(&req.dir);
-    let (name, description) = match load_job(&job_dir) {
+    let task_dir = PathBuf::from(&req.dir);
+    let (name, description) = match load_task(&task_dir) {
         Ok((def, _, _)) => (def.name, def.description),
         Err(err) => {
             return (
@@ -220,12 +213,12 @@ async fn add_job(
     let id = s.next_id;
     s.next_id += 1;
 
-    s.jobs.push(JobEntry {
+    s.tasks.push(TaskEntry {
         id,
         dir: req.dir,
         name: name.clone(),
         description: description.clone(),
-        state: JobState::Queued,
+        state: TaskState::Queued,
         phase: None,
         script_index: 0,
         script_total: 0,
@@ -249,34 +242,31 @@ async fn add_job(
     (StatusCode::CREATED, Json(serde_json::json!({"id": id}))).into_response()
 }
 
-async fn remove_job(
-    State(app): State<AppState>,
-    Path(id): Path<usize>,
-) -> Response {
+async fn remove_task(State(app): State<AppState>, Path(id): Path<usize>) -> Response {
     let mut s = app.state.write().unwrap();
 
     if s.running {
         return (
             StatusCode::CONFLICT,
-            Json(serde_json::json!({"error": "cannot remove jobs while running"})),
+            Json(serde_json::json!({"error": "cannot remove tasks while running"})),
         )
             .into_response();
     }
 
-    if let Some(pos) = s.jobs.iter().position(|j| j.id == id) {
-        s.jobs.remove(pos);
+    if let Some(pos) = s.tasks.iter().position(|j| j.id == id) {
+        s.tasks.remove(pos);
         StatusCode::NO_CONTENT.into_response()
     } else {
         (
             StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": "job not found"})),
+            Json(serde_json::json!({"error": "task not found"})),
         )
             .into_response()
     }
 }
 
-async fn run_jobs(State(app): State<AppState>) -> Response {
-    let jobs_to_run: Vec<(usize, PathBuf)> = {
+async fn run_tasks(State(app): State<AppState>) -> Response {
+    let tasks_to_run: Vec<(usize, PathBuf)> = {
         let mut s = app.state.write().unwrap();
 
         if s.running {
@@ -287,28 +277,28 @@ async fn run_jobs(State(app): State<AppState>) -> Response {
                 .into_response();
         }
 
-        if s.jobs.is_empty() {
+        if s.tasks.is_empty() {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "no jobs in queue"})),
+                Json(serde_json::json!({"error": "no tasks in queue"})),
             )
                 .into_response();
         }
 
         s.running = true;
-        s.jobs
+        s.tasks
             .iter()
-            .filter(|j| j.state == JobState::Queued)
+            .filter(|j| j.state == TaskState::Queued)
             .map(|j| (j.id, PathBuf::from(&j.dir)))
             .collect()
     };
 
-    for (id, job_path) in jobs_to_run {
+    for (id, task_path) in tasks_to_run {
         let app_clone = app.clone();
         std::thread::Builder::new()
-            .name(format!("dashboard-job-{id}"))
-            .spawn(move || run_job_worker(id, job_path, app_clone))
-            .expect("failed to spawn job worker thread");
+            .name(format!("dashboard-task-{id}"))
+            .spawn(move || run_task_worker(id, task_path, app_clone))
+            .expect("failed to spawn task worker thread");
     }
 
     (
@@ -318,18 +308,18 @@ async fn run_jobs(State(app): State<AppState>) -> Response {
         .into_response()
 }
 
-// ── Job worker (runs in a plain OS thread to avoid blocking the async runtime) ─
+// ── Task worker (runs in a plain OS thread to avoid blocking the async runtime) ─
 
-fn run_job_worker(id: usize, job_path: PathBuf, app: AppState) {
+fn run_task_worker(id: usize, task_path: PathBuf, app: AppState) {
     let started_at = Instant::now();
 
-    let (def, input, output) = match load_job(&job_path) {
+    let (def, input, output) = match load_task(&task_path) {
         Ok(t) => t,
         Err(err) => {
             let mut s = app.state.write().unwrap();
-            if let Some(job) = s.jobs.iter_mut().find(|j| j.id == id) {
-                job.state = JobState::Failed;
-                job.error = Some(err.clone());
+            if let Some(task) = s.tasks.iter_mut().find(|j| j.id == id) {
+                task.state = TaskState::Failed;
+                task.error = Some(err.clone());
             }
             s.push_event(
                 &app.sse_tx,
@@ -348,8 +338,8 @@ fn run_job_worker(id: usize, job_path: PathBuf, app: AppState) {
     // Mark running
     {
         let mut s = app.state.write().unwrap();
-        if let Some(job) = s.jobs.iter_mut().find(|j| j.id == id) {
-            job.state = JobState::Running;
+        if let Some(task) = s.tasks.iter_mut().find(|j| j.id == id) {
+            task.state = TaskState::Running;
         }
         s.push_event(
             &app.sse_tx,
@@ -378,10 +368,10 @@ fn run_job_worker(id: usize, job_path: PathBuf, app: AppState) {
     let mut s = app.state.write().unwrap();
     match result {
         Ok(_) => {
-            if let Some(job) = s.jobs.iter_mut().find(|j| j.id == id) {
-                job.state = JobState::Succeeded;
-                job.elapsed_ms = Some(elapsed_ms);
-                job.output = Some(output.display().to_string());
+            if let Some(task) = s.tasks.iter_mut().find(|j| j.id == id) {
+                task.state = TaskState::Succeeded;
+                task.elapsed_ms = Some(elapsed_ms);
+                task.output = Some(output.display().to_string());
             }
             s.push_event(
                 &app.sse_tx,
@@ -396,10 +386,10 @@ fn run_job_worker(id: usize, job_path: PathBuf, app: AppState) {
         }
         Err(err) => {
             let err_str = err.to_string();
-            if let Some(job) = s.jobs.iter_mut().find(|j| j.id == id) {
-                job.state = JobState::Failed;
-                job.elapsed_ms = Some(elapsed_ms);
-                job.error = Some(err_str.clone());
+            if let Some(task) = s.tasks.iter_mut().find(|j| j.id == id) {
+                task.state = TaskState::Failed;
+                task.elapsed_ms = Some(elapsed_ms);
+                task.error = Some(err_str.clone());
             }
             s.push_event(
                 &app.sse_tx,
@@ -429,8 +419,8 @@ fn forward_progress(id: usize, progress: &RunProgress, app: &AppState) {
                 RunPhase::CollectingOutput => "CollectingOutput",
                 RunPhase::CleaningUp => "CleaningUp",
             };
-            if let Some(job) = s.jobs.iter_mut().find(|j| j.id == id) {
-                job.phase = Some(label.to_string());
+            if let Some(task) = s.tasks.iter_mut().find(|j| j.id == id) {
+                task.phase = Some(label.to_string());
             }
             serde_json::json!({"type": "phase", "id": id, "phase": label})
         }
@@ -440,11 +430,11 @@ fn forward_progress(id: usize, progress: &RunProgress, app: &AppState) {
             index,
             total,
         } => {
-            if let Some(job) = s.jobs.iter_mut().find(|j| j.id == id) {
-                job.current_script = Some(script.clone());
-                job.script_index = *index;
-                job.script_total = *total;
-                job.recent_logs.clear();
+            if let Some(task) = s.tasks.iter_mut().find(|j| j.id == id) {
+                task.current_script = Some(script.clone());
+                task.script_index = *index;
+                task.script_total = *total;
+                task.recent_logs.clear();
             }
             serde_json::json!({
                 "type": "script",
@@ -461,9 +451,9 @@ fn forward_progress(id: usize, progress: &RunProgress, app: &AppState) {
             index,
             total,
         } => {
-            if let Some(job) = s.jobs.iter_mut().find(|j| j.id == id) {
-                job.script_index = *index;
-                job.script_total = *total;
+            if let Some(task) = s.tasks.iter_mut().find(|j| j.id == id) {
+                task.script_index = *index;
+                task.script_total = *total;
             }
             serde_json::json!({
                 "type": "script",
@@ -476,11 +466,11 @@ fn forward_progress(id: usize, progress: &RunProgress, app: &AppState) {
         }
 
         RunProgress::LogLine { line } => {
-            if let Some(job) = s.jobs.iter_mut().find(|j| j.id == id) {
-                if job.recent_logs.len() >= 10 {
-                    job.recent_logs.pop_front();
+            if let Some(task) = s.tasks.iter_mut().find(|j| j.id == id) {
+                if task.recent_logs.len() >= 10 {
+                    task.recent_logs.pop_front();
                 }
-                job.recent_logs.push_back(line.clone());
+                task.recent_logs.push_back(line.clone());
             }
             serde_json::json!({"type": "log", "id": id, "line": line})
         }
@@ -491,9 +481,9 @@ fn forward_progress(id: usize, progress: &RunProgress, app: &AppState) {
 
 fn maybe_clear_running(s: &mut DashboardState) {
     let all_done = s
-        .jobs
+        .tasks
         .iter()
-        .all(|j| matches!(j.state, JobState::Succeeded | JobState::Failed));
+        .all(|j| matches!(j.state, TaskState::Succeeded | TaskState::Failed));
     if all_done {
         s.running = false;
     }
@@ -514,11 +504,11 @@ mod tests {
         (app, rx)
     }
 
-    fn make_job(id: usize, state: JobState) -> JobEntry {
-        JobEntry {
+    fn make_task(id: usize, state: TaskState) -> TaskEntry {
+        TaskEntry {
             id,
-            dir: format!("/jobs/{id}"),
-            name: Some(format!("job-{id}")),
+            dir: format!("/tasks/{id}"),
+            name: Some(format!("task-{id}")),
             description: None,
             state,
             phase: None,
@@ -537,7 +527,7 @@ mod tests {
     #[test]
     fn new_state_is_empty_and_not_running() {
         let s = DashboardState::new();
-        assert!(s.jobs.is_empty());
+        assert!(s.tasks.is_empty());
         assert!(!s.running);
         assert_eq!(s.next_id, 0);
         assert!(s.replay.is_empty());
@@ -570,7 +560,11 @@ mod tests {
 
         s.push_event(&app.sse_tx, serde_json::json!({"seq": "newest"}));
 
-        assert_eq!(s.replay.len(), SSE_REPLAY_CAPACITY, "capacity must not grow");
+        assert_eq!(
+            s.replay.len(),
+            SSE_REPLAY_CAPACITY,
+            "capacity must not grow"
+        );
         // seq:0 was the oldest and should have been evicted
         assert!(
             !s.replay[0].contains("\"seq\":0"),
@@ -586,11 +580,11 @@ mod tests {
     // ── maybe_clear_running ───────────────────────────────────────────────────
 
     #[test]
-    fn maybe_clear_running_clears_when_all_jobs_terminal() {
+    fn maybe_clear_running_clears_when_all_tasks_terminal() {
         let mut s = DashboardState::new();
         s.running = true;
-        s.jobs.push(make_job(0, JobState::Succeeded));
-        s.jobs.push(make_job(1, JobState::Failed));
+        s.tasks.push(make_task(0, TaskState::Succeeded));
+        s.tasks.push(make_task(1, TaskState::Failed));
 
         maybe_clear_running(&mut s);
 
@@ -601,8 +595,8 @@ mod tests {
     fn maybe_clear_running_keeps_true_while_any_running() {
         let mut s = DashboardState::new();
         s.running = true;
-        s.jobs.push(make_job(0, JobState::Succeeded));
-        s.jobs.push(make_job(1, JobState::Running));
+        s.tasks.push(make_task(0, TaskState::Succeeded));
+        s.tasks.push(make_task(1, TaskState::Running));
 
         maybe_clear_running(&mut s);
 
@@ -613,8 +607,8 @@ mod tests {
     fn maybe_clear_running_keeps_true_while_any_queued() {
         let mut s = DashboardState::new();
         s.running = true;
-        s.jobs.push(make_job(0, JobState::Succeeded));
-        s.jobs.push(make_job(1, JobState::Queued));
+        s.tasks.push(make_task(0, TaskState::Succeeded));
+        s.tasks.push(make_task(1, TaskState::Queued));
 
         maybe_clear_running(&mut s);
 
@@ -622,11 +616,11 @@ mod tests {
     }
 
     #[test]
-    fn maybe_clear_running_does_not_set_false_when_no_jobs() {
-        // Empty job list: all() on empty iterator returns true,
+    fn maybe_clear_running_does_not_set_false_when_no_tasks() {
+        // Empty task list: all() on empty iterator returns true,
         // so running is cleared. This is the correct behaviour — it
-        // can only be reached in practice when a run completes with 0 jobs,
-        // which the API prevents (run_jobs rejects empty queues).
+        // can only be reached in practice when a run completes with 0 tasks,
+        // which the API prevents (run_tasks rejects empty queues).
         let mut s = DashboardState::new();
         s.running = true;
         maybe_clear_running(&mut s);
@@ -637,20 +631,19 @@ mod tests {
     // ── forward_progress ─────────────────────────────────────────────────────
 
     #[test]
-    fn forward_progress_phase_updates_job_and_broadcasts_event() {
+    fn forward_progress_phase_updates_task_and_broadcasts_event() {
         let (app, mut rx) = make_app();
         {
             let mut s = app.state.write().unwrap();
-            s.jobs.push(make_job(0, JobState::Running));
+            s.tasks.push(make_task(0, TaskState::Running));
         }
 
         forward_progress(0, &RunProgress::Phase(RunPhase::RunningScripts), &app);
 
         let s = app.state.read().unwrap();
-        assert_eq!(s.jobs[0].phase, Some("RunningScripts".to_string()));
+        assert_eq!(s.tasks[0].phase, Some("RunningScripts".to_string()));
 
-        let evt: serde_json::Value =
-            serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+        let evt: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
         assert_eq!(evt["type"], "phase");
         assert_eq!(evt["id"], 0);
         assert_eq!(evt["phase"], "RunningScripts");
@@ -661,9 +654,9 @@ mod tests {
         let (app, _rx) = make_app();
         {
             let mut s = app.state.write().unwrap();
-            let mut job = make_job(0, JobState::Running);
-            job.recent_logs.push_back("old log".to_string());
-            s.jobs.push(job);
+            let mut task = make_task(0, TaskState::Running);
+            task.recent_logs.push_back("old log".to_string());
+            s.tasks.push(task);
         }
 
         forward_progress(
@@ -678,15 +671,12 @@ mod tests {
 
         let s = app.state.read().unwrap();
         assert!(
-            s.jobs[0].recent_logs.is_empty(),
+            s.tasks[0].recent_logs.is_empty(),
             "logs must be cleared on ScriptStarted"
         );
-        assert_eq!(
-            s.jobs[0].current_script,
-            Some("10_build.sh".to_string())
-        );
-        assert_eq!(s.jobs[0].script_index, 1);
-        assert_eq!(s.jobs[0].script_total, 3);
+        assert_eq!(s.tasks[0].current_script, Some("10_build.sh".to_string()));
+        assert_eq!(s.tasks[0].script_index, 1);
+        assert_eq!(s.tasks[0].script_total, 3);
     }
 
     #[test]
@@ -694,7 +684,7 @@ mod tests {
         let (app, mut rx) = make_app();
         {
             let mut s = app.state.write().unwrap();
-            s.jobs.push(make_job(0, JobState::Running));
+            s.tasks.push(make_task(0, TaskState::Running));
         }
 
         forward_progress(
@@ -708,11 +698,10 @@ mod tests {
         );
 
         let s = app.state.read().unwrap();
-        assert_eq!(s.jobs[0].script_index, 1);
-        assert_eq!(s.jobs[0].script_total, 3);
+        assert_eq!(s.tasks[0].script_index, 1);
+        assert_eq!(s.tasks[0].script_total, 3);
 
-        let evt: serde_json::Value =
-            serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+        let evt: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
         assert_eq!(evt["done"], true);
     }
 
@@ -721,7 +710,7 @@ mod tests {
         let (app, _rx) = make_app();
         {
             let mut s = app.state.write().unwrap();
-            s.jobs.push(make_job(0, JobState::Running));
+            s.tasks.push(make_task(0, TaskState::Running));
         }
 
         for i in 0..12usize {
@@ -735,27 +724,23 @@ mod tests {
         }
 
         let s = app.state.read().unwrap();
-        assert_eq!(s.jobs[0].recent_logs.len(), 10, "must cap at 10 entries");
+        assert_eq!(s.tasks[0].recent_logs.len(), 10, "must cap at 10 entries");
         assert_eq!(
-            s.jobs[0].recent_logs.front().unwrap(),
+            s.tasks[0].recent_logs.front().unwrap(),
             "line 2",
             "oldest surviving entry should be line 2"
         );
         assert_eq!(
-            s.jobs[0].recent_logs.back().unwrap(),
+            s.tasks[0].recent_logs.back().unwrap(),
             "line 11",
             "newest entry should be line 11"
         );
     }
 
     #[test]
-    fn forward_progress_ignores_unknown_job_id_silently() {
+    fn forward_progress_ignores_unknown_task_id_silently() {
         let (app, _rx) = make_app();
-        // No jobs in state — should not panic.
-        forward_progress(
-            99,
-            &RunProgress::Phase(RunPhase::StartingVm),
-            &app,
-        );
+        // No tasks in state — should not panic.
+        forward_progress(99, &RunProgress::Phase(RunPhase::StartingVm), &app);
     }
 }

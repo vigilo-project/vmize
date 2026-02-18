@@ -1,7 +1,7 @@
-pub mod job;
 mod error;
 mod result;
 mod runner;
+pub mod task;
 
 pub use error::Error;
 pub use result::RunResult;

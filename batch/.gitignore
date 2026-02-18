@@ -1,7 +1,7 @@
 /target/
 
-# Job output directories
-jobs/*/output/*
-!jobs/*/output/.gitkeep
+# Task output directories
+tasks/*/output/*
+!tasks/*/output/.gitkeep
 example/*/output/*
 !example/*/output/.gitkeep

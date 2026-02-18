@@ -25,11 +25,11 @@ fn dashboard_bin() -> String {
     })
 }
 
-fn example_job_dir() -> String {
+fn example_task_dir() -> String {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../batch/example/job1")
+        .join("../batch/example/task1")
         .canonicalize()
-        .expect("batch/example/job1 must exist")
+        .expect("batch/example/task1 must exist")
         .to_string_lossy()
         .into_owned()
 }
@@ -108,10 +108,7 @@ fn serve_dashboard_returns_html() {
     assert!(ct.contains("text/html"), "content-type: {ct}");
 
     let body = resp.text().unwrap();
-    assert!(
-        body.contains("<!DOCTYPE html>"),
-        "missing DOCTYPE in body"
-    );
+    assert!(body.contains("<!DOCTYPE html>"), "missing DOCTYPE in body");
     assert!(
         body.contains("dashboard"),
         "title 'dashboard' not found in HTML"
@@ -127,51 +124,62 @@ fn serve_dashboard_returns_html() {
 #[test]
 fn get_status_returns_empty_initial_state() {
     let server = TestServer::start();
-    let resp = server.client().get(server.url("/api/status")).send().unwrap();
+    let resp = server
+        .client()
+        .get(server.url("/api/status"))
+        .send()
+        .unwrap();
 
     assert_eq!(resp.status(), 200);
     let body: serde_json::Value = resp.json().unwrap();
-    assert_eq!(body["jobs"], serde_json::json!([]), "jobs must be empty initially");
+    assert_eq!(
+        body["tasks"],
+        serde_json::json!([]),
+        "tasks must be empty initially"
+    );
     assert_eq!(body["running"], false, "running must be false initially");
 }
 
-// ── POST /api/jobs ────────────────────────────────────────────────────────────
+// ── POST /api/tasks ────────────────────────────────────────────────────────────
 
 #[test]
-fn add_job_with_valid_dir_returns_201_and_appears_in_status() {
+fn add_task_with_valid_dir_returns_201_and_appears_in_status() {
     let server = TestServer::start();
     let client = server.client();
-    let dir = example_job_dir();
+    let dir = example_task_dir();
 
     let resp = client
-        .post(server.url("/api/jobs"))
+        .post(server.url("/api/tasks"))
         .json(&serde_json::json!({"dir": dir}))
         .send()
         .unwrap();
     assert_eq!(resp.status(), 201);
     let body: serde_json::Value = resp.json().unwrap();
-    assert!(body["id"].is_number(), "response must contain numeric id: {body}");
+    assert!(
+        body["id"].is_number(),
+        "response must contain numeric id: {body}"
+    );
 
-    // Confirm job appears in status
+    // Confirm task appears in status
     let status: serde_json::Value = client
         .get(server.url("/api/status"))
         .send()
         .unwrap()
         .json()
         .unwrap();
-    let jobs = status["jobs"].as_array().unwrap();
-    assert_eq!(jobs.len(), 1);
-    assert_eq!(jobs[0]["state"], "queued");
-    assert_eq!(jobs[0]["name"], "job1-print-result");
-    assert_eq!(jobs[0]["running"], serde_json::Value::Null);
+    let tasks = status["tasks"].as_array().unwrap();
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0]["state"], "queued");
+    assert_eq!(tasks[0]["name"], "task1-print-result");
+    assert_eq!(tasks[0]["running"], serde_json::Value::Null);
 }
 
 #[test]
-fn add_job_with_invalid_dir_returns_400_with_error_field() {
+fn add_task_with_invalid_dir_returns_400_with_error_field() {
     let server = TestServer::start();
     let resp = server
         .client()
-        .post(server.url("/api/jobs"))
+        .post(server.url("/api/tasks"))
         .json(&serde_json::json!({"dir": "/definitely/does/not/exist"}))
         .send()
         .unwrap();
@@ -185,26 +193,26 @@ fn add_job_with_invalid_dir_returns_400_with_error_field() {
 }
 
 #[test]
-fn add_five_jobs_returns_400_on_fifth() {
+fn add_five_tasks_returns_400_on_fifth() {
     let server = TestServer::start();
     let client = server.client();
-    let dir = example_job_dir();
+    let dir = example_task_dir();
 
     for i in 0..4 {
         let r = client
-            .post(server.url("/api/jobs"))
+            .post(server.url("/api/tasks"))
             .json(&serde_json::json!({"dir": dir}))
             .send()
             .unwrap();
-        assert_eq!(r.status(), 201, "job {i} should be accepted");
+        assert_eq!(r.status(), 201, "task {i} should be accepted");
     }
 
     let resp = client
-        .post(server.url("/api/jobs"))
+        .post(server.url("/api/tasks"))
         .json(&serde_json::json!({"dir": dir}))
         .send()
         .unwrap();
-    assert_eq!(resp.status(), 400, "5th job must be rejected");
+    assert_eq!(resp.status(), 400, "5th task must be rejected");
     let body: serde_json::Value = resp.json().unwrap();
     assert!(
         body["error"].as_str().unwrap_or("").contains("full"),
@@ -212,16 +220,16 @@ fn add_five_jobs_returns_400_on_fifth() {
     );
 }
 
-// ── DELETE /api/jobs/{id} ─────────────────────────────────────────────────────
+// ── DELETE /api/tasks/{id} ─────────────────────────────────────────────────────
 
 #[test]
-fn remove_queued_job_returns_204_and_disappears_from_status() {
+fn remove_queued_task_returns_204_and_disappears_from_status() {
     let server = TestServer::start();
     let client = server.client();
 
     let add: serde_json::Value = client
-        .post(server.url("/api/jobs"))
-        .json(&serde_json::json!({"dir": example_job_dir()}))
+        .post(server.url("/api/tasks"))
+        .json(&serde_json::json!({"dir": example_task_dir()}))
         .send()
         .unwrap()
         .json()
@@ -229,7 +237,7 @@ fn remove_queued_job_returns_204_and_disappears_from_status() {
     let id = add["id"].as_u64().unwrap();
 
     let del = client
-        .delete(server.url(&format!("/api/jobs/{id}")))
+        .delete(server.url(&format!("/api/tasks/{id}")))
         .send()
         .unwrap();
     assert_eq!(del.status(), 204);
@@ -241,18 +249,18 @@ fn remove_queued_job_returns_204_and_disappears_from_status() {
         .json()
         .unwrap();
     assert_eq!(
-        status["jobs"].as_array().unwrap().len(),
+        status["tasks"].as_array().unwrap().len(),
         0,
-        "job must be gone from status after DELETE"
+        "task must be gone from status after DELETE"
     );
 }
 
 #[test]
-fn remove_nonexistent_job_returns_404() {
+fn remove_nonexistent_task_returns_404() {
     let server = TestServer::start();
     let resp = server
         .client()
-        .delete(server.url("/api/jobs/9999"))
+        .delete(server.url("/api/tasks/9999"))
         .send()
         .unwrap();
     assert_eq!(resp.status(), 404);
@@ -263,31 +271,24 @@ fn remove_nonexistent_job_returns_404() {
 #[test]
 fn run_with_empty_queue_returns_400() {
     let server = TestServer::start();
-    let resp = server
-        .client()
-        .post(server.url("/api/run"))
-        .send()
-        .unwrap();
+    let resp = server.client().post(server.url("/api/run")).send().unwrap();
     assert_eq!(resp.status(), 400);
     let body: serde_json::Value = resp.json().unwrap();
     assert!(body["error"].is_string(), "expected error field: {body}");
 }
 
 #[test]
-fn run_starts_jobs_and_sets_running_true() {
+fn run_starts_tasks_and_sets_running_true() {
     let server = TestServer::start();
     let client = server.client();
 
     client
-        .post(server.url("/api/jobs"))
-        .json(&serde_json::json!({"dir": example_job_dir()}))
+        .post(server.url("/api/tasks"))
+        .json(&serde_json::json!({"dir": example_task_dir()}))
         .send()
         .unwrap();
 
-    let resp = client
-        .post(server.url("/api/run"))
-        .send()
-        .unwrap();
+    let resp = client.post(server.url("/api/run")).send().unwrap();
     assert_eq!(resp.status(), 202);
     let body: serde_json::Value = resp.json().unwrap();
     assert_eq!(body["status"], "started");
@@ -311,8 +312,8 @@ fn run_twice_returns_409_on_second_call() {
     let client = server.client();
 
     client
-        .post(server.url("/api/jobs"))
-        .json(&serde_json::json!({"dir": example_job_dir()}))
+        .post(server.url("/api/tasks"))
+        .json(&serde_json::json!({"dir": example_task_dir()}))
         .send()
         .unwrap();
     client.post(server.url("/api/run")).send().unwrap();
@@ -321,10 +322,10 @@ fn run_twice_returns_409_on_second_call() {
     assert_eq!(resp.status(), 409);
 }
 
-/// Full end-to-end test: adds a job, runs it, waits for completion, checks output.
+/// Full end-to-end test: adds a task, runs it, waits for completion, checks output.
 /// Skipped unless `DASHBOARD_IT=1` is set (requires QEMU).
 #[test]
-fn run_api_run_job_succeeds() {
+fn run_api_run_task_succeeds() {
     if std::env::var("DASHBOARD_IT").is_err() {
         eprintln!("Skipping VM end-to-end test: set DASHBOARD_IT=1 to run.");
         return;
@@ -334,17 +335,20 @@ fn run_api_run_job_succeeds() {
     let client = server.client();
 
     client
-        .post(server.url("/api/jobs"))
-        .json(&serde_json::json!({"dir": example_job_dir()}))
+        .post(server.url("/api/tasks"))
+        .json(&serde_json::json!({"dir": example_task_dir()}))
         .send()
         .unwrap();
 
     client.post(server.url("/api/run")).send().unwrap();
 
-    // Poll status until job is no longer running (max 5 min).
+    // Poll status until task is no longer running (max 5 min).
     let deadline = Instant::now() + Duration::from_secs(300);
     loop {
-        assert!(Instant::now() < deadline, "job did not complete within 5 min");
+        assert!(
+            Instant::now() < deadline,
+            "task did not complete within 5 min"
+        );
         std::thread::sleep(Duration::from_secs(5));
 
         let status: serde_json::Value = client
@@ -354,21 +358,21 @@ fn run_api_run_job_succeeds() {
             .json()
             .unwrap();
 
-        let job = &status["jobs"][0];
-        let state = job["state"].as_str().unwrap_or("unknown");
-        eprintln!("state={state} phase={}", job["phase"]);
+        let task = &status["tasks"][0];
+        let state = task["state"].as_str().unwrap_or("unknown");
+        eprintln!("state={state} phase={}", task["phase"]);
 
         match state {
             "succeeded" => {
                 assert!(
-                    job["output"].is_string(),
-                    "succeeded job must have output path"
+                    task["output"].is_string(),
+                    "succeeded task must have output path"
                 );
-                assert!(job["elapsed_ms"].is_number());
+                assert!(task["elapsed_ms"].is_number());
                 break;
             }
             "failed" => {
-                panic!("job failed: {}", job["error"]);
+                panic!("task failed: {}", task["error"]);
             }
             _ => {}
         }
@@ -391,10 +395,7 @@ fn sse_endpoint_returns_event_stream_content_type() {
             .unwrap();
         (
             resp.status().as_u16(),
-            resp.headers()["content-type"]
-                .to_str()
-                .unwrap()
-                .to_string(),
+            resp.headers()["content-type"].to_str().unwrap().to_string(),
         )
     });
 
@@ -411,10 +412,10 @@ fn sse_replays_loaded_event_to_new_subscriber() {
     let server = TestServer::start();
     let client = server.client();
 
-    // Add a job so the server has a "loaded" event in its replay buffer.
+    // Add a task so the server has a "loaded" event in its replay buffer.
     client
-        .post(server.url("/api/jobs"))
-        .json(&serde_json::json!({"dir": example_job_dir()}))
+        .post(server.url("/api/tasks"))
+        .json(&serde_json::json!({"dir": example_task_dir()}))
         .send()
         .unwrap();
 
@@ -431,7 +432,7 @@ fn sse_replays_loaded_event_to_new_subscriber() {
         "SSE replay must contain 'loaded' event; got: {body}"
     );
     assert!(
-        body.contains("job1-print-result"),
-        "SSE event must include job name from job.json; got: {body}"
+        body.contains("task1-print-result"),
+        "SSE event must include task name from task.json; got: {body}"
     );
 }

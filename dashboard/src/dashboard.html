@@ -72,13 +72,13 @@
       height: 1.2em;
     }
 
-    .jobs {
+    .tasks {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
       gap: 16px;
     }
 
-    .job-card {
+    .task-card {
       background: #161b22;
       border: 1px solid #30363d;
       border-radius: 8px;
@@ -86,12 +86,12 @@
       transition: border-color 0.2s;
     }
 
-    .job-card.queued    { border-color: #30363d; }
-    .job-card.running   { border-color: #1f6feb; }
-    .job-card.succeeded { border-color: #238636; }
-    .job-card.failed    { border-color: #da3633; }
+    .task-card.queued    { border-color: #30363d; }
+    .task-card.running   { border-color: #1f6feb; }
+    .task-card.succeeded { border-color: #238636; }
+    .task-card.failed    { border-color: #da3633; }
 
-    .job-header {
+    .task-header {
       display: flex;
       justify-content: space-between;
       align-items: flex-start;
@@ -99,14 +99,14 @@
       gap: 8px;
     }
 
-    .job-name {
+    .task-name {
       font-weight: 700;
       font-size: 1em;
       color: #e6edf3;
       word-break: break-all;
     }
 
-    .job-badges {
+    .task-badges {
       display: flex;
       gap: 6px;
       align-items: center;
@@ -143,13 +143,13 @@
       color: #ff7b72;
     }
 
-    .job-desc {
+    .task-desc {
       color: #8b949e;
       font-size: 0.82em;
       margin-bottom: 8px;
     }
 
-    .job-phase {
+    .task-phase {
       font-size: 0.8em;
       color: #58a6ff;
       margin-bottom: 6px;
@@ -184,7 +184,7 @@
       text-overflow: ellipsis;
     }
 
-    .job-logs {
+    .task-logs {
       background: #010409;
       border: 1px solid #21262d;
       border-radius: 4px;
@@ -206,32 +206,32 @@
       color: #21262d;
     }
 
-    .job-footer {
+    .task-footer {
       margin-top: 8px;
       font-size: 0.78em;
       color: #6e7681;
     }
 
-    .job-output { color: #56d364; word-break: break-all; }
-    .job-error  { color: #ff7b72; word-break: break-all; margin-top: 3px; }
+    .task-output { color: #56d364; word-break: break-all; }
+    .task-error  { color: #ff7b72; word-break: break-all; margin-top: 3px; }
   </style>
 </head>
 <body>
   <h1>dashboard</h1>
 
   <div class="controls">
-    <input type="text" id="job-dir" placeholder="/path/to/job-dir" />
-    <button id="add-btn" onclick="addJob()">Add</button>
+    <input type="text" id="task-dir" placeholder="/path/to/task-dir" />
+    <button id="add-btn" onclick="addTask()">Add</button>
     <button id="run-btn" onclick="runAll()" disabled>Run All</button>
   </div>
 
   <div class="status-bar" id="status-bar">Connecting…</div>
-  <div class="jobs" id="jobs"></div>
+  <div class="tasks" id="tasks"></div>
 
   <script>
     'use strict';
 
-    const jobs = {};   // id (number) → job object
+    const tasks = {};   // id (number) → task object
     let running = false;
 
     // ── Load initial state ───────────────────────────────────────────────────
@@ -239,8 +239,8 @@
       .then(r => r.json())
       .then(data => {
         running = data.running;
-        data.jobs.forEach(j => {
-          jobs[j.id] = {
+        data.tasks.forEach(j => {
+          tasks[j.id] = {
             id:             j.id,
             dir:            j.dir,
             name:           j.name,
@@ -255,7 +255,7 @@
             error:          j.error,
             output:         j.output,
           };
-          renderJob(j.id);
+          renderTask(j.id);
         });
         updateControls();
       });
@@ -263,7 +263,7 @@
     // ── SSE ──────────────────────────────────────────────────────────────────
     function connectSse() {
       const es = new EventSource('/events');
-      es.onopen    = () => setStatus(running ? 'Jobs running…' : 'Connected');
+      es.onopen    = () => setStatus(running ? 'Tasks running…' : 'Connected');
       es.onmessage = e  => handleEvent(JSON.parse(e.data));
       es.onerror   = () => {
         setStatus('Reconnecting…');
@@ -278,56 +278,56 @@
       switch (ev.type) {
 
         case 'loaded':
-          if (!jobs[ev.id]) {
-            jobs[ev.id] = {
+          if (!tasks[ev.id]) {
+            tasks[ev.id] = {
               id: ev.id, dir: '', name: ev.name, description: ev.description,
               state: 'queued', phase: null,
               script_index: 0, script_total: 0, current_script: null,
               logs: [], elapsed_ms: null, error: null, output: null,
             };
-            renderJob(ev.id);
+            renderTask(ev.id);
             updateControls();
           }
           break;
 
         case 'phase':
-          if (jobs[ev.id]) {
-            if (jobs[ev.id].state === 'queued') jobs[ev.id].state = 'running';
-            jobs[ev.id].phase = ev.phase;
-            renderJob(ev.id);
+          if (tasks[ev.id]) {
+            if (tasks[ev.id].state === 'queued') tasks[ev.id].state = 'running';
+            tasks[ev.id].phase = ev.phase;
+            renderTask(ev.id);
           }
           break;
 
         case 'script':
-          if (jobs[ev.id]) {
-            jobs[ev.id].state = 'running';
-            jobs[ev.id].script_index   = ev.index;
-            jobs[ev.id].script_total   = ev.total;
-            jobs[ev.id].current_script = ev.done ? null : ev.name;
-            if (!ev.done) jobs[ev.id].logs = [];
-            renderJob(ev.id);
+          if (tasks[ev.id]) {
+            tasks[ev.id].state = 'running';
+            tasks[ev.id].script_index   = ev.index;
+            tasks[ev.id].script_total   = ev.total;
+            tasks[ev.id].current_script = ev.done ? null : ev.name;
+            if (!ev.done) tasks[ev.id].logs = [];
+            renderTask(ev.id);
           }
           break;
 
         case 'log':
-          if (jobs[ev.id]) {
-            jobs[ev.id].logs.push(ev.line);
-            if (jobs[ev.id].logs.length > 3)
-              jobs[ev.id].logs = jobs[ev.id].logs.slice(-3);
-            renderJob(ev.id);
+          if (tasks[ev.id]) {
+            tasks[ev.id].logs.push(ev.line);
+            if (tasks[ev.id].logs.length > 3)
+              tasks[ev.id].logs = tasks[ev.id].logs.slice(-3);
+            renderTask(ev.id);
           }
           break;
 
         case 'finished':
-          if (jobs[ev.id]) {
-            jobs[ev.id].state      = ev.success ? 'succeeded' : 'failed';
-            jobs[ev.id].elapsed_ms = ev.elapsed_ms || null;
-            jobs[ev.id].output     = ev.output || null;
-            jobs[ev.id].error      = ev.error  || null;
-            renderJob(ev.id);
+          if (tasks[ev.id]) {
+            tasks[ev.id].state      = ev.success ? 'succeeded' : 'failed';
+            tasks[ev.id].elapsed_ms = ev.elapsed_ms || null;
+            tasks[ev.id].output     = ev.output || null;
+            tasks[ev.id].error      = ev.error  || null;
+            renderTask(ev.id);
           }
           {
-            const allDone = Object.values(jobs).every(
+            const allDone = Object.values(tasks).every(
               j => j.state === 'succeeded' || j.state === 'failed');
             if (allDone) { running = false; }
           }
@@ -337,15 +337,15 @@
     }
 
     // ── Render ───────────────────────────────────────────────────────────────
-    function renderJob(id) {
-      const j = jobs[id];
+    function renderTask(id) {
+      const j = tasks[id];
       if (!j) return;
 
-      const container = document.getElementById('jobs');
-      let card = document.getElementById('job-' + id);
+      const container = document.getElementById('tasks');
+      let card = document.getElementById('task-' + id);
       if (!card) {
         card = document.createElement('div');
-        card.id = 'job-' + id;
+        card.id = 'task-' + id;
         container.appendChild(card);
       }
 
@@ -358,17 +358,17 @@
 
       const showRemove = j.state === 'queued' && !running;
 
-      card.className = 'job-card ' + j.state;
+      card.className = 'task-card ' + j.state;
       card.innerHTML =
-        '<div class="job-header">' +
-          '<span class="job-name">' + esc(j.name || ('job-' + id)) + '</span>' +
-          '<span class="job-badges">' +
+        '<div class="task-header">' +
+          '<span class="task-name">' + esc(j.name || ('task-' + id)) + '</span>' +
+          '<span class="task-badges">' +
             '<span class="badge badge-' + j.state + '">' + stateLabels[j.state] + '</span>' +
-            (showRemove ? '<button class="remove-btn" onclick="removeJob(' + id + ')">✕</button>' : '') +
+            (showRemove ? '<button class="remove-btn" onclick="removeTask(' + id + ')">✕</button>' : '') +
           '</span>' +
         '</div>' +
-        (j.description ? '<div class="job-desc">' + esc(j.description) + '</div>' : '') +
-        '<div class="job-phase">' + (j.phase ? 'phase: ' + j.phase : (j.state === 'queued' ? 'waiting…' : '')) + '</div>' +
+        (j.description ? '<div class="task-desc">' + esc(j.description) + '</div>' : '') +
+        '<div class="task-phase">' + (j.phase ? 'phase: ' + j.phase : (j.state === 'queued' ? 'waiting…' : '')) + '</div>' +
         '<div class="progress-wrap">' +
           '<div class="progress-bar"><div class="progress-fill" style="width:' + pct + '%"></div></div>' +
           '<div class="script-label">' +
@@ -377,20 +377,20 @@
               : '') +
           '</div>' +
         '</div>' +
-        '<div class="job-logs">' + logsHtml + '</div>' +
-        '<div class="job-footer">' +
+        '<div class="task-logs">' + logsHtml + '</div>' +
+        '<div class="task-footer">' +
           (j.elapsed_ms ? '<span>elapsed: ' + (j.elapsed_ms / 1000).toFixed(1) + 's</span>' : '') +
-          (j.output ? '<div class="job-output">→ ' + esc(j.output) + '</div>' : '') +
-          (j.error  ? '<div class="job-error">' + esc(j.error) + '</div>' : '') +
+          (j.output ? '<div class="task-output">→ ' + esc(j.output) + '</div>' : '') +
+          (j.error  ? '<div class="task-error">' + esc(j.error) + '</div>' : '') +
         '</div>';
     }
 
     // ── Controls ──────────────────────────────────────────────────────────────
-    function addJob() {
-      const dir = document.getElementById('job-dir').value.trim();
-      if (!dir) { alert('Enter a job directory path'); return; }
+    function addTask() {
+      const dir = document.getElementById('task-dir').value.trim();
+      if (!dir) { alert('Enter a task directory path'); return; }
 
-      fetch('/api/jobs', {
+      fetch('/api/tasks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ dir }),
@@ -398,18 +398,18 @@
         .then(r => r.json())
         .then(data => {
           if (data.error) { alert('Error: ' + data.error); return; }
-          document.getElementById('job-dir').value = '';
+          document.getElementById('task-dir').value = '';
           updateControls();
         })
         .catch(err => alert('Network error: ' + err));
     }
 
-    function removeJob(id) {
-      fetch('/api/jobs/' + id, { method: 'DELETE' })
+    function removeTask(id) {
+      fetch('/api/tasks/' + id, { method: 'DELETE' })
         .then(r => {
           if (r.ok) {
-            delete jobs[id];
-            const card = document.getElementById('job-' + id);
+            delete tasks[id];
+            const card = document.getElementById('task-' + id);
             if (card) card.remove();
             updateControls();
           }
@@ -428,15 +428,15 @@
 
     function updateControls() {
       const btn = document.getElementById('run-btn');
-      const hasQueued = Object.values(jobs).some(j => j.state === 'queued');
+      const hasQueued = Object.values(tasks).some(j => j.state === 'queued');
       btn.disabled = running || !hasQueued;
-      const queued  = Object.values(jobs).filter(j => j.state === 'queued').length;
-      const total   = Object.keys(jobs).length;
+      const queued  = Object.values(tasks).filter(j => j.state === 'queued').length;
+      const total   = Object.keys(tasks).length;
       setStatus(
-        running    ? 'Jobs running…' :
-        hasQueued  ? queued + ' job' + (queued > 1 ? 's' : '') + ' queued' + (total > queued ? ', ' + (total - queued) + ' finished' : '') + ' — press Run All' :
-        total > 0  ? 'All jobs finished' :
-                     'No jobs — add a job directory above'
+        running    ? 'Tasks running…' :
+        hasQueued  ? queued + ' task' + (queued > 1 ? 's' : '') + ' queued' + (total > queued ? ', ' + (total - queued) + ' finished' : '') + ' — press Run All' :
+        total > 0  ? 'All tasks finished' :
+                     'No tasks — add a task directory above'
       );
     }
 
@@ -453,8 +453,8 @@
     }
 
     // Handle enter key in input
-    document.getElementById('job-dir')
-      .addEventListener('keydown', e => { if (e.key === 'Enter') addJob(); });
+    document.getElementById('task-dir')
+      .addEventListener('keydown', e => { if (e.key === 'Enter') addTask(); });
   </script>
 </body>
 </html>

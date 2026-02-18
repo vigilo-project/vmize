@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-job="split-job3"
+task="split-task3"
 choices=(rock paper scissors)
 a_score=0
 b_score=0
@@ -22,8 +22,8 @@ for round in 1 2 3 4 5 6 7 8 9 10; do
     b_score=$((b_score + 1))
   fi
 
-  echo "[$job] round $round: alpha=$a_pick beta=$b_pick => $result"
-  echo "[$job] score: alpha=$a_score beta=$b_score"
+  echo "[$task] round $round: alpha=$a_pick beta=$b_pick => $result"
+  echo "[$task] score: alpha=$a_score beta=$b_score"
   sleep 1
 done
 
@@ -35,5 +35,5 @@ else
   winner="draw"
 fi
 
-printf 'alpha=%d\nbeta=%d\nwinner=%s\n' "$a_score" "$b_score" "$winner" > /tmp/batch/out/${job}.txt
-echo "[$job] saved result to /tmp/batch/out/${job}.txt"
+printf 'alpha=%d\nbeta=%d\nwinner=%s\n' "$a_score" "$b_score" "$winner" > /tmp/batch/out/${task}.txt
+echo "[$task] saved result to /tmp/batch/out/${task}.txt"
