@@ -8,6 +8,18 @@ fn project_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
+fn vm_bin_path() -> String {
+    std::env::var("CARGO_BIN_EXE_vm").unwrap_or_else(|_| {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("target")
+            .join("debug")
+            .join("vm")
+            .to_string_lossy()
+            .into_owned()
+    })
+}
+
 fn default_data_dir() -> PathBuf {
     let home = std::env::var("HOME").expect("HOME not set");
     PathBuf::from(home).join(".local").join("share").join("vm")
@@ -34,17 +46,9 @@ async fn test_vm_run_ssh_apt() {
     log_progress(&format!("Using data dir: {}", data_dir.display()));
 
     log_progress("Running vm run...");
-    let run_output = Command::new("cargo")
-        .args([
-            "run",
-            "--release",
-            "--",
-            "run",
-            "--username",
-            username,
-            "--ssh-port",
-            "4445",
-        ])
+    let vm_bin = vm_bin_path();
+    let run_output = Command::new(&vm_bin)
+        .args(["run", "--username", username, "--ssh-port", "4445"])
         .current_dir(project_dir())
         .output()
         .expect("Failed to run vm");
@@ -143,11 +147,8 @@ async fn test_vm_run_ssh_apt() {
     std::fs::write(&local_file, "hello from vm cp").expect("Failed to write test file");
     log_progress("Testing cp local->vm...");
 
-    let cp_output = Command::new("cargo")
+    let cp_output = Command::new(&vm_bin)
         .args([
-            "run",
-            "--release",
-            "--",
             "cp",
             local_file.to_str().unwrap(),
             &format!("{vm_id}:/tmp/transfer_test.txt"),
@@ -177,11 +178,8 @@ async fn test_vm_run_ssh_apt() {
 
     // Test cp: VM -> local
     let pulled_file = tmp_dir.join("transferred_test.txt");
-    let cp_from_vm_output = Command::new("cargo")
+    let cp_from_vm_output = Command::new(&vm_bin)
         .args([
-            "run",
-            "--release",
-            "--",
             "cp",
             &format!("{vm_id}:/tmp/transfer_test.txt"),
             pulled_file.to_str().unwrap(),
@@ -212,11 +210,8 @@ async fn test_vm_run_ssh_apt() {
     std::fs::write(local_dir.join("subdir/b.txt"), "file b").expect("Failed to write b.txt");
     log_progress("Testing cp -r local->vm...");
 
-    let cp_r_output = Command::new("cargo")
+    let cp_r_output = Command::new(&vm_bin)
         .args([
-            "run",
-            "--release",
-            "--",
             "cp",
             "-r",
             local_dir.to_str().unwrap(),
@@ -351,8 +346,8 @@ fn run_ssh_command(key_path: &PathBuf, ssh_port: u16, username: &str, cmd: &str)
 }
 
 fn run_vm_ssh_command(vm_id: &str, cmd: &str) -> Output {
-    Command::new("cargo")
-        .args(["run", "--release", "--", "ssh", vm_id, cmd])
+    Command::new(vm_bin_path())
+        .args(["ssh", vm_id, cmd])
         .current_dir(project_dir())
         .output()
         .unwrap_or_else(|e| panic!("Failed to run vm ssh '{}': {}", cmd, e))
@@ -377,8 +372,8 @@ impl VmCleanupGuard {
     }
 
     fn try_stop(&self, vm_id: &str) -> Result<(), String> {
-        let output = Command::new("cargo")
-            .args(["run", "--release", "--", "rm", vm_id])
+        let output = Command::new(vm_bin_path())
+            .args(["rm", vm_id])
             .current_dir(project_dir())
             .output()
             .map_err(|e| format!("Failed to execute stop command: {}", e))?;
