@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use vm::api::{self, RunOptions};
+use vm::{cp, ps, rm, run, ssh, ssh_stream, RunOptions};
 
 /// VM CLI - Ubuntu Cloud Image VM Automation
 #[derive(Parser, Debug)]
@@ -130,7 +130,7 @@ async fn main() -> Result<()> {
                 verbose,
                 ..Default::default()
             };
-            let record = api::run(options).await?;
+            let record = run(options).await?;
             if verbose {
                 println!("{}", record.id);
             } else {
@@ -144,26 +144,26 @@ async fn main() -> Result<()> {
             stream,
         } => match (command, stream) {
             (Some(cmd), true) => {
-                api::ssh_stream(&id, &cmd)?;
+                ssh_stream(&id, &cmd)?;
             }
             (Some(cmd), false) => {
-                let output = api::ssh(&id, Some(&cmd)).await?;
+                let output = ssh(&id, Some(&cmd)).await?;
                 println!("{}", output);
             }
             (None, _) => {
-                api::ssh(&id, None).await?;
+                ssh(&id, None).await?;
             }
         },
         Commands::Ps => {
-            let output = api::ps()?;
+            let output = ps()?;
             print!("{}", output);
         }
         Commands::Rm { id, all } => {
             if all {
-                api::rm(None)?;
+                rm(None)?;
             } else {
                 let id = id.context("VM id is required (or use --all to remove all VMs)")?;
-                api::rm(Some(&id))?;
+                rm(Some(&id))?;
             }
         }
         Commands::Cp {
@@ -171,7 +171,7 @@ async fn main() -> Result<()> {
             dest,
             recursive,
         } => {
-            api::cp(&src, &dest, recursive)?;
+            cp(&src, &dest, recursive)?;
         }
         Commands::Version => {
             println!("vm {}", env!("CARGO_PKG_VERSION"));

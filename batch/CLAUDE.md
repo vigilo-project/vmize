@@ -25,11 +25,11 @@ cargo fmt                      # Format
 ## Core Flow (`runner.rs`)
 
 1. Validate paths, discover scripts (sorted alphabetically)
-2. `vm::api::run()` → spin up VM
+2. `vm::run()` → spin up VM
 3. `prepare_vm()` → mkdir + copy scripts into VM
 4. `execute_scripts()` → run each script via SSH, stream output
-5. `vm::api::cp_from()` → collect `/tmp/batch/out` back to host
-6. `vm::api::rm()` → destroy VM
+5. `vm::cp_from()` → collect `/tmp/batch/out` back to host
+6. `vm::rm()` → destroy VM
 
 Cleanup always runs, even on failure. Errors are combined, not swallowed.
 

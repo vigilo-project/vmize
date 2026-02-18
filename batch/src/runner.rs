@@ -101,7 +101,7 @@ where
         return Err(Error::NoScripts(input_dir.to_path_buf()));
     }
 
-    let on_progress: vm_crate::api::ProgressCallback = progress_tx.as_ref().map(|tx| {
+    let on_progress: vm_crate::ProgressCallback = progress_tx.as_ref().map(|tx| {
         let tx = tx.clone();
         Box::new(move |step: u8, total: u8, msg: &str| {
             let _ = tx.send(RunProgress::LogLine {
@@ -110,7 +110,7 @@ where
         }) as Box<dyn Fn(u8, u8, &str) + Send>
     });
 
-    let vm_options = vm_crate::api::RunOptions {
+    let vm_options = vm_crate::RunOptions {
         disk_size: options.disk_size,
         show_progress: options.show_progress,
         on_progress,
@@ -118,7 +118,7 @@ where
     };
 
     send_progress(&progress_tx, RunProgress::Phase(RunPhase::StartingVm));
-    let record = vm_crate::api::run(vm_options)
+    let record = vm_crate::run(vm_options)
         .await
         .map_err(|err| Error::VmStart {
             message: err.to_string(),
@@ -136,7 +136,7 @@ where
     };
 
     send_progress(&progress_tx, RunProgress::Phase(RunPhase::CollectingOutput));
-    let collect_error = vm_crate::api::cp_from(
+    let collect_error = vm_crate::cp_from(
         &vm_id,
         &format!("{}/.", VM_OUTPUT_DIR),
         path_to_str(output_dir)?,
@@ -151,7 +151,7 @@ where
     let run_error = run_error.or(collect_error);
 
     send_progress(&progress_tx, RunProgress::Phase(RunPhase::CleaningUp));
-    let cleanup_result = vm_crate::api::rm(Some(&vm_id)).map_err(|err| Error::CleanupFailed {
+    let cleanup_result = vm_crate::rm(Some(&vm_id)).map_err(|err| Error::CleanupFailed {
         vm_id: vm_id.clone(),
         message: err.to_string(),
     });
@@ -185,7 +185,7 @@ async fn prepare_vm(
 ) -> Result<(), Error> {
     send_progress(progress_tx, RunProgress::Phase(RunPhase::PreparingVm));
 
-    vm_crate::api::ssh(
+    vm_crate::ssh(
         vm_id,
         Some(&format!(
             "mkdir -p {} {}",
@@ -199,16 +199,16 @@ async fn prepare_vm(
     })?;
 
     let input_upload_path = input_dir.join(".");
-    vm_crate::api::cp_to(vm_id, path_to_str(&input_upload_path)?, VM_WORK_DIR, true).map_err(
-        |err| Error::CopyToVm {
+    vm_crate::cp_to(vm_id, path_to_str(&input_upload_path)?, VM_WORK_DIR, true).map_err(|err| {
+        Error::CopyToVm {
             message: err.to_string(),
-        },
-    )
+        }
+    })
 }
 
 fn execute_scripts(
     scripts: &[String],
-    record: &vm_crate::api::VmRecord,
+    record: &vm_crate::VmRecord,
     progress_tx: &Option<mpsc::Sender<RunProgress>>,
     result: &mut RunResult,
 ) -> Option<Error> {
@@ -399,7 +399,7 @@ fn send_progress(progress_tx: &Option<std::sync::mpsc::Sender<RunProgress>>, eve
 }
 
 fn ssh_stream_command_with_logs<F>(
-    record: &vm_crate::api::VmRecord,
+    record: &vm_crate::VmRecord,
     command: &str,
     mut on_line: F,
 ) -> Result<(), String>
