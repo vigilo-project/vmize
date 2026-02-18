@@ -132,6 +132,62 @@ fn get_status_returns_empty_initial_state() {
     assert_eq!(body["running"], false, "running must be false initially");
 }
 
+// ── GET /api/task-candidates ────────────────────────────────────────────────
+
+#[test]
+fn get_task_candidates_returns_workspace_tasks_sorted() {
+    let server = TestServer::start();
+    let resp = server
+        .client()
+        .get(server.url("/api/task-candidates"))
+        .send()
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().unwrap();
+    let tasks = body["tasks"].as_array().expect("tasks must be an array");
+    assert!(!tasks.is_empty(), "expected workspace tasks in response");
+
+    let tasks_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../tasks")
+        .canonicalize()
+        .expect("workspace tasks dir must exist");
+
+    let mut names = Vec::new();
+    for task in tasks {
+        let name = task["name"].as_str().unwrap_or("").to_string();
+        let dir = task["dir"]
+            .as_str()
+            .expect("candidate must include task directory");
+        assert!(
+            !name.is_empty(),
+            "candidate must include non-empty task name: {task}"
+        );
+
+        let dir_path = Path::new(dir)
+            .canonicalize()
+            .expect("candidate dir must exist on disk");
+        assert!(
+            dir_path.starts_with(&tasks_root),
+            "candidate dir must be under tasks/: {}",
+            dir_path.display()
+        );
+        assert!(
+            dir_path.join("task.json").is_file(),
+            "candidate dir must contain task.json: {}",
+            dir_path.display()
+        );
+        names.push(name);
+    }
+
+    let mut sorted_names = names.clone();
+    sorted_names.sort_by_key(|name| name.to_lowercase());
+    assert_eq!(
+        names, sorted_names,
+        "task candidates must be sorted by name"
+    );
+}
+
 // ── POST /api/tasks ────────────────────────────────────────────────────────────
 
 #[test]

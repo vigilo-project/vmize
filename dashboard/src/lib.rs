@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::convert::Infallible;
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path as StdPath, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
@@ -54,6 +55,13 @@ struct TaskEntry {
     output: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct TaskCandidate {
+    name: String,
+    description: Option<String>,
+    dir: String,
+}
+
 struct DashboardState {
     tasks: Vec<TaskEntry>,
     next_id: usize,
@@ -88,6 +96,7 @@ type SharedState = Arc<RwLock<DashboardState>>;
 struct AppState {
     state: SharedState,
     sse_tx: Arc<broadcast::Sender<String>>,
+    workspace_root: PathBuf,
 }
 
 // ── Request bodies ────────────────────────────────────────────────────────────
@@ -107,12 +116,14 @@ pub async fn start(port: u16) {
     let app_state = AppState {
         state: Arc::new(RwLock::new(DashboardState::new())),
         sse_tx: Arc::new(sse_tx),
+        workspace_root: detect_workspace_root(),
     };
 
     let app = Router::new()
         .route("/", get(serve_dashboard))
         .route("/events", get(sse_handler))
         .route("/api/status", get(get_status))
+        .route("/api/task-candidates", get(get_task_candidates))
         .route("/api/tasks", post(add_task))
         .route("/api/tasks/{id}", delete(remove_task))
         .route("/api/run", post(run_tasks))
@@ -168,6 +179,11 @@ async fn get_status(State(app): State<AppState>) -> impl IntoResponse {
         "tasks": s.tasks,
         "running": s.running,
     }))
+}
+
+async fn get_task_candidates(State(app): State<AppState>) -> impl IntoResponse {
+    let tasks = discover_task_candidates(&app.workspace_root);
+    Json(serde_json::json!({ "tasks": tasks }))
 }
 
 async fn add_task(State(app): State<AppState>, Json(req): Json<AddTaskRequest>) -> Response {
@@ -491,6 +507,47 @@ fn maybe_clear_running(s: &mut DashboardState) {
     }
 }
 
+fn detect_workspace_root() -> PathBuf {
+    let dashboard_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    dashboard_root
+        .parent()
+        .map_or(dashboard_root.clone(), StdPath::to_path_buf)
+}
+
+fn discover_task_candidates(workspace_root: &StdPath) -> Vec<TaskCandidate> {
+    let tasks_root = workspace_root.join("tasks");
+    let Ok(entries) = fs::read_dir(&tasks_root) else {
+        return Vec::new();
+    };
+
+    let mut tasks = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() || !path.join("task.json").is_file() {
+            continue;
+        }
+
+        let Ok(loaded) = load_task(&path) else {
+            continue;
+        };
+
+        let fallback_name = path
+            .file_name()
+            .map_or_else(String::new, |name| name.to_string_lossy().to_string());
+        let task_name = loaded.definition.name.unwrap_or(fallback_name);
+        let task_dir = path.canonicalize().unwrap_or(path);
+
+        tasks.push(TaskCandidate {
+            name: task_name,
+            description: loaded.definition.description,
+            dir: task_dir.to_string_lossy().to_string(),
+        });
+    }
+
+    tasks.sort_by_key(|task| (task.name.to_lowercase(), task.dir.clone()));
+    tasks
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -502,6 +559,7 @@ mod tests {
         let app = AppState {
             state: Arc::new(RwLock::new(DashboardState::new())),
             sse_tx: Arc::new(tx),
+            workspace_root: detect_workspace_root(),
         };
         (app, rx)
     }

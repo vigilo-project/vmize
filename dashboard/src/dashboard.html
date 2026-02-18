@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>dashboard</title>
+  <title>VMIZE</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -29,9 +29,13 @@
       flex-wrap: wrap;
     }
 
-    .controls input {
+    .task-dir-wrap {
+      position: relative;
       flex: 1;
       min-width: 260px;
+    }
+
+    .controls input {
       padding: 8px 12px;
       background: #161b22;
       border: 1px solid #30363d;
@@ -44,6 +48,61 @@
     .controls input:focus {
       outline: none;
       border-color: #58a6ff;
+    }
+
+    .task-dir-wrap input {
+      width: 100%;
+    }
+
+    .task-candidates {
+      position: absolute;
+      top: calc(100% + 6px);
+      left: 0;
+      right: 0;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      box-shadow: 0 8px 30px rgba(1, 4, 9, 0.6);
+      max-height: 260px;
+      overflow-y: auto;
+      z-index: 20;
+      display: none;
+    }
+
+    .candidate-item {
+      padding: 8px 10px;
+      border-bottom: 1px solid #21262d;
+      cursor: pointer;
+    }
+
+    .candidate-item:last-child {
+      border-bottom: none;
+    }
+
+    .candidate-item.selected,
+    .candidate-item:hover {
+      background: #1f2937;
+    }
+
+    .candidate-name {
+      color: #e6edf3;
+      font-size: 0.83em;
+      font-weight: 600;
+      margin-bottom: 2px;
+    }
+
+    .candidate-meta {
+      color: #8b949e;
+      font-size: 0.74em;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .candidate-empty {
+      color: #8b949e;
+      font-size: 0.78em;
+      padding: 10px;
     }
 
     button {
@@ -245,10 +304,13 @@
   </style>
 </head>
 <body>
-  <h1>dashboard</h1>
+  <h1>VMIZE</h1>
 
   <div class="controls">
-    <input type="text" id="task-dir" placeholder="/path/to/task-dir" />
+    <div class="task-dir-wrap" id="task-dir-wrap">
+      <input type="text" id="task-dir" placeholder="/path/to/task-dir" autocomplete="off" />
+      <div id="task-candidates" class="task-candidates"></div>
+    </div>
     <button id="add-btn" onclick="addTask()">Add</button>
     <button id="run-btn" onclick="runAll()" disabled>Run All</button>
   </div>
@@ -261,6 +323,30 @@
 
     const tasks = {};   // id (number) → task object
     let running = false;
+    let candidatesUnavailable = false;
+    let taskCandidates = [];
+    let filteredCandidates = [];
+    let candidateOpen = false;
+    let selectedCandidateIndex = -1;
+
+    // ── Task candidates ──────────────────────────────────────────────────────
+    function loadTaskCandidates() {
+      return fetch('/api/task-candidates')
+        .then(r => r.json())
+        .then(data => {
+          taskCandidates = Array.isArray(data.tasks) ? data.tasks : [];
+          candidatesUnavailable = false;
+          updateCandidateFilter();
+        })
+        .catch(() => {
+          taskCandidates = [];
+          candidatesUnavailable = true;
+          updateCandidateFilter();
+          updateControls();
+        });
+    }
+
+    loadTaskCandidates();
 
     // ── Load initial state ───────────────────────────────────────────────────
     fetch('/api/status')
@@ -458,6 +544,87 @@
       }
     }
 
+    function normalizeText(v) {
+      return String(v || '').toLowerCase();
+    }
+
+    function updateCandidateFilter() {
+      const input = document.getElementById('task-dir');
+      const query = normalizeText(input.value.trim());
+      filteredCandidates = query === ''
+        ? taskCandidates.slice()
+        : taskCandidates.filter(c =>
+            normalizeText(c.name).includes(query) ||
+            normalizeText(c.description).includes(query) ||
+            normalizeText(c.dir).includes(query));
+
+      if (filteredCandidates.length === 0) {
+        selectedCandidateIndex = -1;
+      } else if (selectedCandidateIndex >= filteredCandidates.length) {
+        selectedCandidateIndex = -1;
+      }
+      renderCandidates();
+    }
+
+    function renderCandidates() {
+      const box = document.getElementById('task-candidates');
+      if (!candidateOpen) {
+        box.style.display = 'none';
+        box.innerHTML = '';
+        return;
+      }
+
+      box.style.display = 'block';
+      if (filteredCandidates.length === 0) {
+        box.innerHTML = '<div class="candidate-empty">no matching tasks</div>';
+        return;
+      }
+
+      box.innerHTML = filteredCandidates.map((c, idx) =>
+        '<div class="candidate-item ' + (idx === selectedCandidateIndex ? 'selected' : '') + '" ' +
+          'onclick="pickCandidate(' + idx + ')" data-index="' + idx + '">' +
+          '<div class="candidate-name">' + esc(c.name || c.dir) + '</div>' +
+          (c.description ? '<div class="candidate-meta">' + esc(c.description) + '</div>' : '') +
+          '<div class="candidate-meta">' + esc(c.dir) + '</div>' +
+        '</div>'
+      ).join('');
+    }
+
+    function openCandidates() {
+      candidateOpen = true;
+      updateCandidateFilter();
+    }
+
+    function closeCandidates() {
+      candidateOpen = false;
+      selectedCandidateIndex = -1;
+      renderCandidates();
+    }
+
+    function pickCandidate(index) {
+      const candidate = filteredCandidates[index];
+      if (!candidate) return;
+      const input = document.getElementById('task-dir');
+      input.value = candidate.dir;
+      closeCandidates();
+      input.focus();
+    }
+
+    function moveCandidateSelection(delta) {
+      if (!candidateOpen) {
+        openCandidates();
+      }
+      if (filteredCandidates.length === 0) return;
+      if (selectedCandidateIndex < 0) {
+        selectedCandidateIndex = delta > 0 ? 0 : filteredCandidates.length - 1;
+      } else {
+        selectedCandidateIndex = (selectedCandidateIndex + delta + filteredCandidates.length) % filteredCandidates.length;
+      }
+      renderCandidates();
+      const selected = document.querySelector('.candidate-item.selected');
+      if (selected) selected.scrollIntoView({ block: 'nearest' });
+    }
+
     // ── Controls ──────────────────────────────────────────────────────────────
     function addTask() {
       const dir = document.getElementById('task-dir').value.trim();
@@ -472,6 +639,7 @@
         .then(data => {
           if (data.error) { alert('Error: ' + data.error); return; }
           document.getElementById('task-dir').value = '';
+          closeCandidates();
           updateControls();
         })
         .catch(err => alert('Network error: ' + err));
@@ -506,12 +674,12 @@
       const queued  = Object.values(tasks).filter(j => j.state === 'queued').length;
       const total   = Object.keys(tasks).length;
       updateLayout(total);
-      setStatus(
+      const baseStatus =
         running    ? 'Tasks running…' :
         hasQueued  ? queued + ' task' + (queued > 1 ? 's' : '') + ' queued' + (total > queued ? ', ' + (total - queued) + ' finished' : '') + ' — press Run All' :
         total > 0  ? 'All tasks finished' :
-                     'No tasks — add a task directory above'
-      );
+                     'No tasks — add a task directory above';
+      setStatus(candidatesUnavailable ? baseStatus + ' (task picker unavailable)' : baseStatus);
     }
 
     function updateLayout(total) {
@@ -540,9 +708,38 @@
         .replace(/"/g, '&quot;');
     }
 
-    // Handle enter key in input
-    document.getElementById('task-dir')
-      .addEventListener('keydown', e => { if (e.key === 'Enter') addTask(); });
+    const taskDirInput = document.getElementById('task-dir');
+    taskDirInput.addEventListener('focus', () => openCandidates());
+    taskDirInput.addEventListener('input', () => {
+      candidateOpen = true;
+      updateCandidateFilter();
+    });
+    taskDirInput.addEventListener('keydown', e => {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        moveCandidateSelection(1);
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        moveCandidateSelection(-1);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        closeCandidates();
+      } else if (e.key === 'Enter') {
+        if (candidateOpen && selectedCandidateIndex >= 0 && filteredCandidates.length > 0) {
+          e.preventDefault();
+          pickCandidate(selectedCandidateIndex);
+        } else {
+          addTask();
+        }
+      }
+    });
+
+    document.addEventListener('click', e => {
+      const wrap = document.getElementById('task-dir-wrap');
+      if (!wrap.contains(e.target)) {
+        closeCandidates();
+      }
+    });
   </script>
 </body>
 </html>
