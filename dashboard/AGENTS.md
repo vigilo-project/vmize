@@ -3,40 +3,46 @@
 ## Product Context
 `dashboard` is VMize's browser interface for orchestrating and observing task execution across isolated VMs.
 
-## Project Structure & Module Organization
-`dashboard` is a single-binary Rust crate that provides a browser UI for `batch`.
-
-- `src/main.rs`: CLI entrypoint, HTTP routes, shared state, worker threading, SSE broadcast.
-- `src/dashboard.html`: embedded frontend served at `GET /`.
-- `tests/api.rs`: integration tests for HTTP/API behavior and optional VM end-to-end path.
-
-Keep behavior changes in `src/main.rs` and UI adjustments in `src/dashboard.html` clearly separated in commits.
+## Project Structure
+`dashboard` is a single-binary crate.
+- `src/main.rs`: CLI entrypoint, HTTP routes, shared state, worker threading, SSE broadcast
+- `src/dashboard.html`: embedded frontend served at `GET /`
+- `tests/api.rs`: HTTP/API integration tests and optional VM end-to-end path
 
 ## Minimum Goal (MVP) — Required Release Gate
-Any dashboard change is complete only when all of these are true:
-
+A dashboard change is complete only when all of these remain true:
 1. `dashboard --port 8080` starts successfully.
 2. Valid task path can be added; queue shows `name`/`description` from `task.json`.
-3. Invalid path is rejected with a clear error and no queue mutation.
-4. A 5th queued task is rejected (queue max is 4).
+3. Invalid path is rejected and queue remains unchanged.
+4. A 5th queued task is rejected (queue max 4).
 5. Queued tasks can be removed before run.
-6. `Run All` starts queued tasks in parallel and prevents duplicate starts.
-7. Live card updates show phase, script progress (`N/M`), recent logs, elapsed time.
+6. `Run All` starts queued tasks in parallel and blocks duplicate starts.
+7. Live updates show phase, script progress (`N/M`), recent logs, and elapsed time.
 8. Completion state is explicit: success includes output path; failure includes error.
 9. Browser refresh restores state via `/api/status` and replays recent SSE events.
 
-## Build, Test, and Development Commands
-- `cargo build --release -p dashboard`: build release binary.
-- `cargo test --lib -p dashboard`: unit tests only.
-- `cargo test --test api -p dashboard`: HTTP/API integration tests (no QEMU).
-- `DASHBOARD_IT=1 cargo test --test api run_api_run_task_succeeds -p dashboard -- --nocapture`: VM-required end-to-end run path.
-- `cargo fmt -p dashboard && cargo clippy -p dashboard --all-targets --all-features`: format and lint before PR.
+## Acceptance Checklist
+- API paths stay aligned: `/api/tasks`, `/api/tasks/{id}`, `/api/run`, `/api/status`.
+- SSE replay remains enabled and bounded.
+- Locking model remains safe (`RwLock` not held across `.await`).
 
-## Coding Style & Concurrency Rules
-Use Rust 2021 defaults (`snake_case`, `PascalCase`, `Result`-first error handling). Do not hold `RwLock` guards across `.await`. Preserve axum route syntax (`/api/tasks/{id}`) and SSE replay behavior (recent-event replay + live stream).
+## Verification Commands
+```bash
+cargo build --release -p dashboard
+cargo test -p dashboard --bin dashboard
+cargo test -p dashboard --test api
 
-## Pull Request Guidelines
-Use focused Conventional Commit subjects (`feat:`, `fix:`, `docs:`, `refactor:`). PRs must include:
-- Which MVP items were affected and how they were verified.
-- Exact commands run locally.
-- For UI/API changes: screenshots or response snippets for success and error paths.
+# Optional VM-required path
+DASHBOARD_IT=1 cargo test --test api run_api_run_task_succeeds -p dashboard -- --nocapture
+```
+
+## Coding & Concurrency Rules
+- Rust 2021 style (`snake_case`, `PascalCase`, `Result`-first error handling)
+- Do not hold `RwLock` guards across `.await`
+- Preserve axum route syntax (`/api/tasks/{id}`)
+- Preserve SSE replay behavior (recent-event replay + live stream)
+
+## PR Expectations
+- Specify which MVP items were affected
+- Include exact commands run locally
+- For UI/API changes, attach response snippets or screenshots

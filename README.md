@@ -4,63 +4,83 @@
 >
 > Give every script its own machine.
 
-VMize batches, isolates, and executes your workloads inside ephemeral virtual machines, leaving your host untouched.
+VMize batches, isolates, and executes workloads inside ephemeral virtual machines so the host stays clean.
 
 ## Crates
 
 ### [`vm`](./vm)
 
-A CLI tool for creating and managing Ubuntu Cloud Image VMs via QEMU.
-Handles the full VM lifecycle: image download, cloud-init setup, QEMU process management, and SSH access.
+VM lifecycle runtime: create, connect, copy files, list, and remove Ubuntu cloud-image VMs on QEMU.
 
 ### [`batch`](./batch)
 
-A CLI task runner built on top of `vm`.
-A **task** is a named bundle of shell scripts declared in JSON, executed inside a fresh VM, with outputs copied back to the host.
+Task runner on top of `vm`.
+A **task** is a directory with `task.json`, `scripts/`, and `output/`.
 
 ### [`dashboard`](./dashboard)
 
-A web control plane for running and observing `batch` tasks.
-It provides queueing, live progress, and API-driven orchestration without requiring a TTY.
+Web control plane for queuing and running `batch` tasks with live progress.
 
 ### [`tasks`](./tasks)
 
-Shared task directories consumed by `batch` (for example `runc`, `runc-llama`, `ollama`).
+Shared task directories (for example `runc`, `runc-llama`, `ollama`).
 
-## Dependency chain
+## Dependency Chain
 
-`dashboard → batch → vm → QEMU/KVM (Linux) / HVF (macOS)`
+`dashboard -> batch -> vm -> QEMU/KVM (Linux) or HVF (macOS)`
 
-## Quick start: vm
+## Minimum Goals At A Glance
 
-```bash
-cd vm && ./deps.sh          # Install dependencies and download Ubuntu image
-cargo build --release
-./vm/target/release/vm run
-```
+- `vm`: run a VM, execute commands with `ssh`, transfer files with `cp`, and clean up with `rm`.
+- `batch`: run task directories in isolated VMs, collect outputs, and enforce the `--concurrent` max queue size.
+- `dashboard`: queue tasks, run queued tasks in parallel, stream live state/log updates, and preserve state on reconnect.
 
-## Quick start: batch
+## Quick Start: vm
 
 ```bash
+cd vm && ./deps.sh
 cargo build --release
-./target/release/batch batch/example/task1  # Run one example task
-./target/release/batch tasks/runc-llama     # Run a shared runc-llama task
+./target/release/vm run
 ```
 
-## Quick start: dashboard
+## Quick Start: batch
+
+```bash
+cargo build --release
+./target/release/batch batch/example/task1
+./target/release/batch tasks/runc-llama
+```
+
+## Quick Start: dashboard
 
 ```bash
 cargo build --release
 ./target/release/dashboard --port 8080
 ```
 
+## Verification
+
+```bash
+# Module gates
+cargo test -p vm
+cargo test -p batch
+cargo test -p dashboard
+
+# Optional extended paths
+DASHBOARD_IT=1 cargo test --test api run_api_run_task_succeeds -p dashboard -- --nocapture
+BATCH_OLLAMA_IT=1 cargo test run_in_out_with_ollama_prompt_collects_answer --test integration -p batch -- --nocapture
+
+# Full workspace
+cargo test
+```
+
 ## Structure
 
-```
+```text
 vmize/
-├── Cargo.toml  # workspace root
-├── vm/         # workspace crate
-├── batch/      # workspace crate
-├── dashboard/  # workspace crate
-└── tasks/       # shared task directories
+├── Cargo.toml
+├── vm/
+├── batch/
+├── dashboard/
+└── tasks/
 ```

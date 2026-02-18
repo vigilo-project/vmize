@@ -1,58 +1,49 @@
 # Repository Guidelines
 
 ## Product Context
-`vm` is VMize's infrastructure layer for provisioning, booting, and connecting to ephemeral VMs used by higher-level task runners.
+`vm` is VMize's infrastructure runtime for provisioning, booting, and connecting to ephemeral Ubuntu VMs.
 
-## Project Structure & Module Organization
-`vm` is a Rust CLI for creating and managing Ubuntu cloud-image VMs.
+## Project Structure
+- `src/main.rs`: CLI entrypoint (`run`, `ssh`, `ps`, `rm`, `cp`, `version`)
+- `src/platform.rs`, `src/config.rs`: host detection and runtime config
+- `src/image/`, `src/cloud_init/`, `src/qemu/`, `src/ssh/`: core VM lifecycle internals
+- `tests/integration_test.rs`: lifecycle integration test
+- `deps.sh`: host dependency + Ubuntu image bootstrap
 
-- `src/main.rs`: CLI entrypoint (`run`, `ssh`, `ps`, `rm`).
-- `src/platform.rs`, `src/config.rs`: host detection and runtime config.
-- `src/image/`, `src/cloud_init/`, `src/qemu/`, `src/ssh/`: image download, seed ISO generation, QEMU launch, and SSH helpers.
-- `tests/integration_test.rs`: end-to-end VM lifecycle test.
-- `AGENTS.md`: contributor guidance.
-- `deps.sh`: host dependency + Ubuntu image bootstrap.
-- `vms/`: runtime artifacts (`images/`, `instances/`, `keys/`).
+Runtime artifacts are stored under `~/.local/share/vm/` (`images/`, `instances/`, `keys/`).
 
-## Build, Test, and Development Commands
-- `./deps.sh`: install platform dependencies and cache the Ubuntu 24.04 image.
-- `cargo build --release`: build optimized binary.
-- `cargo run --release -- run --ssh-port 2222`: create/start a VM and print VM ID.
-- `cargo run --release -- ssh <vm-id> "uname -a"`: execute a command over SSH.
-- `cargo run --release -- stop <vm-id>`: stop a managed VM.
-- `cargo run --release -- clear`: remove all managed VM records and keys.
-- `cargo run --release -- list`: list managed VMs.
-- `cargo test`: run all tests.
+## Minimum Goal (MVP)
+A `vm` change is acceptable only if all of these remain true:
+1. `run` creates a reachable VM and returns a usable VM ID.
+2. `ssh` executes commands on a managed VM.
+3. `cp` transfers files both local->VM and VM->local.
+4. `ps` lists managed VMs.
+5. `rm <id>` and `rm --all` clean up managed resources.
 
-## Coding Style & Naming Conventions
-- Follow standard Rust formatting: 4-space indentation and `rustfmt` defaults.
-- Run `cargo fmt` before submitting changes.
-- Prefer `snake_case` for functions/modules, `PascalCase` for types, and keep public names aligned to responsibilities.
-- Keep platform-specific behavior inside `platform`/`qemu` configuration boundaries.
+## Acceptance Checklist
+- VM ID lifecycle remains stable (`run -> ssh/cp -> rm`).
+- CLI subcommands and options match `src/main.rs`.
+- Default runtime path remains `~/.local/share/vm` unless intentionally changed.
 
-## Testing Guidelines
-- Primary framework: Rust test harness with async tests via `#[tokio::test]`.
-- Integration tests should validate VM lifecycle using ID-based commands and clean up by `stop <vm-id>`.
-- Name tests by behavior (example: `test_vm_run_ssh_apt`).
-- Add coverage for record lookup/lookup-failure paths when lifecycle API evolves.
+## Verification Commands
+```bash
+./deps.sh
+cargo build --release -p vm
+cargo test -p vm
 
-## Commit & Pull Request Guidelines
-- Current history uses concise summary prefixes.
-- Keep commit subjects imperative and specific.
-- Use Conventional Commits style for consistency (no extra spaces around scope/type separators).
-- Preferred commit types:
-  - `feat`: new feature
-  - `fix`: bug fix
-  - `refactor`: restructuring without behavior change
-  - `docs`: documentation updates
-  - `test`: test additions/maintenance
-  - `chore`: maintenance tasks (cleanup, formatting, dependency/tooling updates)
-- Recommended format: `type(scope): summary` (for example `feat(qemu): add vnc support`)
-- PRs should include:
-  - Clear problem/solution summary.
-  - Commands run locally (for example: `cargo fmt`, `cargo test`).
-  - Linked issue when applicable and relevant runtime logs for VM/QEMU failures.
+# Focused lifecycle integration path
+cargo test -p vm --test integration_test test_vm_run_ssh_apt -- --nocapture
+```
 
-## Security & Configuration Tips
-- Never commit `vms/` artifacts, private keys, or machine-specific runtime files.
-- Use non-default SSH ports in local parallel runs to avoid collisions (for example `4445`, `4450`).
+## Development Commands
+- `cargo run --release -p vm -- run --ssh-port 2222`
+- `cargo run --release -p vm -- ssh <vm-id> "uname -a"`
+- `cargo run --release -p vm -- cp ./file.txt <vm-id>:/tmp/file.txt`
+- `cargo run --release -p vm -- ps`
+- `cargo run --release -p vm -- rm <vm-id>`
+- `cargo run --release -p vm -- rm --all`
+
+## Conventions
+- Use `rustfmt` defaults
+- Keep platform-specific behavior inside `platform`/`qemu`
+- Prefer explicit errors and behavior-driven tests

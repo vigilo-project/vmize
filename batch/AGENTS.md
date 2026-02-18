@@ -1,27 +1,40 @@
 # Repository Guidelines
 
 ## Product Context
-`batch` is VMize's workload runner. It turns each task into an isolated VM execution.
+`batch` is VMize's task execution engine. It runs task directories inside ephemeral VMs.
 
 ## Structure
-
 - `src/bin/batch.rs` — CLI entrypoint
 - `src/lib.rs` — public API surface
 - `src/runner.rs`, `src/result.rs`, `src/error.rs` — core logic
-- `tests/integration.rs` — end-to-end tests (require QEMU)
-- `example/` — sample task JSON files and input scripts
+- `src/task.rs` — task definition loading (`task.json`)
+- `tests/integration.rs` — end-to-end tests (requires QEMU)
+- `example/` — sample task directories
 
-## Commands
+## Minimum Goal (MVP)
+A `batch` change is acceptable only if all of these remain true:
+1. A valid task directory (`task.json` + `scripts/`) runs successfully.
+2. Task scripts execute in deterministic filename order.
+3. Output is collected back to host `output/`.
+4. Failure is surfaced as non-zero exit and clear error output.
+5. `--concurrent` rejects more than 4 tasks.
 
+## Acceptance Checklist
+- Task loading errors are clear (`Failed to load task ...`).
+- Successful runs produce expected output artifacts.
+- `--concurrent` limit enforcement is unchanged.
+- CLI usage/help behavior is unchanged for invalid args.
+
+## Verification Commands
 ```bash
-cargo build --release
-cargo test -- --nocapture
-cargo fmt && cargo clippy
+cargo build --release -p batch
+cargo test -p batch
+
+# Optional integration path
+BATCH_OLLAMA_IT=1 cargo test run_in_out_with_ollama_prompt_collects_answer --test integration -p batch -- --nocapture
 ```
 
 ## Conventions
-
-- Rust defaults: `snake_case` functions, `PascalCase` types, `SCREAMING_SNAKE_CASE` constants
-- Explicit `Result` error propagation, small composable functions
-- Commit subjects: short imperative, matching existing history
-- Keep commits focused — don't mix refactors with behavior changes
+- Rust defaults: `snake_case`, `PascalCase`, `SCREAMING_SNAKE_CASE`
+- Prefer explicit `Result` propagation and small composable functions
+- Keep commits focused; avoid mixing refactor and behavior changes

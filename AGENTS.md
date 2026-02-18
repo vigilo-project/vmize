@@ -1,50 +1,53 @@
 # Repository Guidelines
 
 ## Product Context
-VMize turns tasks into VMs. Each workload runs inside an ephemeral machine so host state stays clean and reproducible.
+VMize turns tasks into VMs. Each workload runs in an ephemeral machine so host state stays reproducible.
 
-## Project Structure & Module Organization
-This repository is a Cargo workspace (`Cargo.toml`) with three crates:
-- `vm/`: CLI for creating/managing Ubuntu cloud-image VMs via QEMU.
-- `batch/`: runs task directories inside ephemeral VMs.
-- `dashboard/`: axum-based web UI for running `batch` tasks.
-- `tasks/`: shared task directories (`task.json`, `scripts/`, `output/`) used by `batch`.
+## Project Structure
+This repository is a Cargo workspace with three crates:
+- `vm/`: VM lifecycle CLI using Ubuntu cloud images + QEMU.
+- `batch/`: task-directory runner built on top of `vm`.
+- `dashboard/`: web UI/API for queueing and running `batch` tasks.
+- `tasks/`: shared task fixtures (`task.json`, `scripts/`, `output/`).
 
 Key paths:
-- `vm/src/`, `batch/src/`, `dashboard/src/`: crate source code.
-- `vm/tests/`, `batch/tests/`, `dashboard/tests/`: integration tests.
-- `batch/example/` and `tasks/`: task fixtures and workflows.
+- `vm/src/`, `batch/src/`, `dashboard/src/`
+- `vm/tests/`, `batch/tests/`, `dashboard/tests/`
+- `batch/example/`, `tasks/`
 
-Keep generated build artifacts out of review scope (for example `target/`).
+## Workspace Release Gate
+A change is release-ready only when module minimum goals are still true:
+- `vm`: lifecycle path works (`run -> ssh/cp -> ps -> rm`).
+- `batch`: task execution and output collection work; concurrency limit is enforced.
+- `dashboard`: queue/add/remove/run, SSE progress, and reconnect replay all work.
+
+Required verification commands:
+- `cargo test -p vm`
+- `cargo test -p batch`
+- `cargo test -p dashboard`
+
+Optional extended checks:
+- `DASHBOARD_IT=1 cargo test --test api run_api_run_task_succeeds -p dashboard -- --nocapture`
+- `BATCH_OLLAMA_IT=1 cargo test run_in_out_with_ollama_prompt_collects_answer --test integration -p batch -- --nocapture`
 
 ## Dashboard MVP Priority
-For any change in `dashboard/` (UI, API, task execution flow, SSE), treat `dashboard/AGENTS.md` as the release gate. A dashboard PR is not complete unless it satisfies the full MVP criteria there (browser UX + API behavior + SSE reconnect replay).
+For any change in `dashboard/` (UI, API, task execution flow, SSE), treat `dashboard/AGENTS.md` as the release gate.
 
 ## Build, Test, and Development Commands
-- `cargo build --release`: builds all crates.
-- `cargo test`: runs all tests, including VM-dependent ones.
-- `cargo test --lib --bin batch -p batch`: fast `batch` tests (no VM boot).
-- `cargo test --test api -p dashboard`: dashboard HTTP/API integration tests (no QEMU).
-- `cargo test --lib -p dashboard`: dashboard unit tests only.
-- `DASHBOARD_IT=1 cargo test --test api run_api_run_task_succeeds -p dashboard -- --nocapture`: dashboard end-to-end VM test.
-- `BATCH_OLLAMA_IT=1 cargo test run_in_out_with_ollama_prompt_collects_answer --test integration -p batch -- --nocapture`: opt-in Ollama integration.
-- `(cd vm && ./deps.sh)`: install host deps and download Ubuntu image cache.
+- `cargo build --release`
+- `cargo test`
+- `cargo test --lib --bin batch -p batch`
+- `cargo test --test api -p dashboard`
+- `(cd vm && ./deps.sh)`
 
-## Coding Style & Naming Conventions
-Use Rust 2021 defaults and keep code `rustfmt`-formatted. Run `cargo fmt` and `cargo clippy` before opening a PR. Follow standard naming:
-- `snake_case` for functions/modules/files.
-- `PascalCase` for structs/enums/traits.
-- `SCREAMING_SNAKE_CASE` for constants.
+## Coding Style
+Use Rust 2021 defaults and keep code `rustfmt`-formatted.
+- `snake_case` for functions/modules/files
+- `PascalCase` for types
+- `SCREAMING_SNAKE_CASE` for constants
 
-## Testing Guidelines
-Primary framework is Rust’s built-in test harness (`#[test]`, `#[tokio::test]`). Add unit tests near logic changes and integration tests for CLI/API changes. Name tests by behavior (`run_*`, `test_vm_*`).
-
-When dashboard behavior changes, run `cargo test --test api -p dashboard` at minimum, and run the `DASHBOARD_IT=1` case for run-path changes.
-
-## Commit & Pull Request Guidelines
-Use concise Conventional Commit subjects such as `feat: ...`, `fix(ci): ...`, `docs: ...`, `refactor: ...`. Keep each commit focused.
-
-PRs should include:
-- What changed and why.
-- Commands run locally (for example `cargo fmt`, `cargo clippy`, relevant `cargo test ...`).
-- Linked issue (if applicable) and relevant logs/screenshots.
+## PR Expectations
+- Focused scope
+- Clear reason for change
+- Exact local commands run
+- Relevant logs/screenshots for behavior changes
