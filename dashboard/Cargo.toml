@@ -17,3 +17,6 @@ batch = { path = "../batch" }
 
 [dev-dependencies]
 reqwest = { version = "0.12", features = ["json", "blocking"] }
+
+[lints]
+workspace = true

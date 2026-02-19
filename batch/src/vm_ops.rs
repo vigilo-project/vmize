@@ -3,9 +3,10 @@
 //! This module provides an abstraction layer over the `vm` crate,
 //! enabling unit testing without requiring QEMU/VM infrastructure.
 
-use std::sync::Mutex;
-
 use anyhow::Result;
+
+#[cfg(test)]
+use std::sync::Mutex;
 
 // Re-export VmRecord for convenience
 pub use vm::VmRecord;
