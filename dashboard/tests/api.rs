@@ -102,8 +102,8 @@ fn serve_dashboard_returns_html() {
     let body = resp.text().unwrap();
     assert!(body.contains("<!DOCTYPE html>"), "missing DOCTYPE in body");
     assert!(
-        body.contains("dashboard"),
-        "title 'dashboard' not found in HTML"
+        body.contains("VMIZE"),
+        "title 'VMIZE' not found in HTML"
     );
     assert!(
         body.contains("EventSource"),
