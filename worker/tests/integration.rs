@@ -98,7 +98,7 @@ fn run_task_ollama_prompt_collects_answer() {
     }
 
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let task_dir = manifest_dir.join("../example/ollama");
+    let task_dir = manifest_dir.join("example/ollama");
 
     let loaded = load_task(&task_dir).expect("load_task must succeed for example/ollama");
 
