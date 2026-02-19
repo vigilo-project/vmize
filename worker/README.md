@@ -9,7 +9,7 @@ Built on top of [`vm`](https://github.com/vigilo-project/vm), `worker` defines a
 - `input/` — scripts and assets to copy into the VM
 - `output/` — collected output files and per-command logs
 
-Shared curated tasks in this workspace live in `../tasks/`.
+Shared curated tasks in this workspace live in `./example/`.
 
 ## Minimum Goal
 `worker` is considered healthy when it can:
@@ -44,8 +44,8 @@ cargo build --release
   worker/example/split-task4
 
 # Shared tasks
-./target/release/vmize task tasks/runc
-./target/release/vmize task tasks/runc-llama
+./target/release/vmize task example/runc
+./target/release/vmize task example/runc-llama
 ```
 
 ## Task Directory Structure

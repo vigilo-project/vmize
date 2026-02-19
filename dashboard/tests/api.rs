@@ -146,7 +146,7 @@ fn get_task_candidates_returns_workspace_tasks_sorted() {
     assert!(!tasks.is_empty(), "expected workspace tasks in response");
 
     let tasks_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../tasks")
+        .join("../worker/example")
         .canonicalize()
         .expect("workspace tasks dir must exist");
 
@@ -166,7 +166,7 @@ fn get_task_candidates_returns_workspace_tasks_sorted() {
             .expect("candidate dir must exist on disk");
         assert!(
             dir_path.starts_with(&tasks_root),
-            "candidate dir must be under tasks/: {}",
+            "candidate dir must be under worker/example/: {}",
             dir_path.display()
         );
         assert!(

@@ -19,7 +19,7 @@ cargo fmt                      # Format
 ## Task Directory Layout
 
 ```
-tasks/my-task/
+example/my-task/
 ├── task.json          # Task definition
 ├── input/             # Scripts and assets (binary files allowed)
 │   ├── 00_setup.sh

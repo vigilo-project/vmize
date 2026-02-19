@@ -507,7 +507,7 @@ fn detect_workspace_root() -> PathBuf {
 }
 
 fn discover_task_candidates(workspace_root: &StdPath) -> Vec<TaskCandidate> {
-    let tasks_root = workspace_root.join("tasks");
+    let tasks_root = workspace_root.join("worker").join("example");
     let Ok(entries) = fs::read_dir(&tasks_root) else {
         return Vec::new();
     };

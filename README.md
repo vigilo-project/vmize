@@ -21,6 +21,10 @@ Task definition crate for parsing `task.json` and validating task directories.
 Task runner on top of `vm`.
 A **task** is a directory with `task.json`, `input/`, and `output/`.
 
+### [`worker/example`](./worker/example)
+
+Curated sample tasks (`runc`, `runc-llama`, `ollama`) live here.
+
 ### [`dashboard`](./dashboard)
 
 Web control plane for queuing and running `worker` tasks with live progress.
@@ -28,10 +32,6 @@ Web control plane for queuing and running `worker` tasks with live progress.
 ### [`cli` (`vmize`)](./cli)
 
 Workspace CLI that exposes `task` and `dashboard` commands.
-
-### [`tasks`](./tasks)
-
-Shared task directories (for example `runc`, `runc-llama`, `ollama`).
 
 ## Dependency Chain
 
@@ -56,7 +56,7 @@ cargo build --release
 ```bash
 cargo build --release
 ./target/release/vmize task worker/example/task1
-./target/release/vmize task tasks/runc-llama
+./target/release/vmize task worker/example/runc-llama
 ```
 
 ## Quick Start: dashboard
@@ -96,5 +96,4 @@ vmize/
 ├── worker/
 ├── dashboard/
 ├── cli/
-└── tasks/
 ```

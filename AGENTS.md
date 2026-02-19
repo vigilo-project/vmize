@@ -4,18 +4,18 @@
 VMize turns tasks into VMs. Each workload runs in an ephemeral machine so host state stays reproducible.
 
 ## Project Structure
-This repository is a Cargo workspace with five crates and one shared tasks directory:
+This repository is a Cargo workspace with five crates and shared task examples in the worker crate:
 - `vm/`: VM lifecycle CLI using Ubuntu cloud images + QEMU.
 - `task/`: task definition loading (`task.json`) and directory validation.
 - `worker/`: task-directory runner built on top of `vm`.
 - `dashboard/`: web UI/API library for queueing and running `worker` tasks.
 - `cli/`: workspace CLI (`vmize`) for running tasks and starting the dashboard.
-- `tasks/`: shared task fixtures (`task.json`, `input/`, `output/`).
+- `worker/example/`: shared task fixtures (`task.json`, `input/`, `output/`).
 
 Key paths:
 - `vm/src/`, `task/src/`, `worker/src/`, `dashboard/src/`, `cli/src/`
 - `vm/tests/`, `worker/tests/`, `dashboard/tests/`
-- `worker/example/`, `tasks/`
+- `worker/example/`
 
 ## Workspace Release Gate
 A change is release-ready only when module minimum goals are still true:
