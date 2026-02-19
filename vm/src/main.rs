@@ -21,10 +21,6 @@ enum Commands {
         #[arg(long, default_value = "ubuntu")]
         username: String,
 
-        /// SSH port forwarding (host port)
-        #[arg(long, default_value_t = 2222)]
-        ssh_port: u16,
-
         /// Memory allocation (e.g., 2G, 4G)
         #[arg(long, default_value = "4G")]
         memory: String,
@@ -111,7 +107,6 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Run {
             username,
-            ssh_port,
             memory,
             cpus,
             disk_size,
@@ -121,7 +116,6 @@ async fn main() -> Result<()> {
         } => {
             let options = RunOptions {
                 username: Some(username),
-                ssh_port: Some(ssh_port),
                 memory: Some(memory),
                 cpus: Some(cpus),
                 disk_size,

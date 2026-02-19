@@ -100,37 +100,48 @@ fn run_batch(tasks: &[PathBuf]) {
         process::exit(1);
     }
 
-    let handles: Vec<_> = tasks
-        .iter()
-        .cloned()
-        .enumerate()
-        .map(|(idx, task_path)| {
-            thread::Builder::new()
-                .name(format!("vmize-task-{idx}"))
-                .spawn(move || -> Result<(), String> {
-                    let loaded = load_task(&task_path)?;
-                    let name = loaded
-                        .definition
-                        .name
-                        .clone()
-                        .unwrap_or_else(|| task_path.display().to_string());
-                    eprintln!("[start] {name}");
-                    run_loaded_task_blocking(
-                        &loaded,
-                        TaskRunOptions {
-                            disk_size: loaded.definition.disk_size.clone(),
-                            ..Default::default()
-                        },
-                    )
-                    .map_err(|e| format_task_error(&name, e))?;
-                    eprintln!("[done]  {name} -> {}", loaded.output_dir.display());
-                    Ok(())
-                })
-                .expect("failed to spawn worker thread")
-        })
-        .collect();
+    let mut failed = 0usize;
+    let mut handles = Vec::with_capacity(tasks.len());
 
-    let failed = handles
+    for (idx, task_path) in tasks.iter().cloned().enumerate() {
+        let task_path_for_thread = task_path.clone();
+        let thread_name = format!("vmize-task-{idx}");
+        let handle = thread::Builder::new().name(thread_name).spawn(move || -> Result<(), String> {
+            let loaded = load_task(&task_path_for_thread).map_err(|err| {
+                format!(
+                    "failed to load task {}: {err}",
+                    task_path_for_thread.display()
+                )
+            })?;
+            let name = loaded
+                .definition
+                .name
+                .clone()
+                .unwrap_or_else(|| task_path_for_thread.display().to_string());
+            eprintln!("[start] {name}");
+            run_loaded_task_blocking(
+                &loaded,
+                TaskRunOptions {
+                    disk_size: loaded.definition.disk_size.clone(),
+                    ..Default::default()
+                },
+            )
+            .map_err(|e| format_task_error(&name, e))?;
+            eprintln!("[done]  {name} -> {}", loaded.output_dir.display());
+            Ok(())
+        });
+
+        match handle {
+            Ok(handle) => handles.push(handle),
+            Err(err) => {
+                failed += 1;
+                eprintln!("[error] failed to spawn worker thread for {}: {err}", task_path.display());
+            }
+        }
+    }
+
+    let failed = failed
+        + handles
         .into_iter()
         .filter_map(|h| {
             h.join()

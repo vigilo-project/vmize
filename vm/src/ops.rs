@@ -24,7 +24,6 @@ pub type ProgressCallback = Option<Box<dyn Fn(u8, u8, &str) + Send>>;
 
 pub struct RunOptions {
     pub username: Option<String>,
-    pub ssh_port: Option<u16>,
     pub memory: Option<String>,
     pub cpus: Option<u32>,
     pub disk_size: Option<String>,
@@ -44,7 +43,6 @@ impl Default for RunOptions {
     fn default() -> Self {
         Self {
             username: None,
-            ssh_port: None,
             memory: None,
             cpus: None,
             disk_size: None,
@@ -407,9 +405,6 @@ async fn verify_ssh_connection(
 
 async fn run_vm_inner(config: &Config, options: RunOptions) -> Result<VmRecord> {
     let username = options.username.unwrap_or_else(|| "ubuntu".to_string());
-    // Note: options.ssh_port is ignored - SSH port is now fixed based on VM ID
-    // (vm0 -> 2220, vm1 -> 2221, etc.)
-    let _ssh_port = options.ssh_port.unwrap_or(2222);
     let memory = options.memory.unwrap_or_else(|| "4G".to_string());
     let cpus = options.cpus.unwrap_or(2);
     let disk_size = options.disk_size;

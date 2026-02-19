@@ -25,6 +25,78 @@ use worker::{
 };
 
 const SSE_REPLAY_CAPACITY: usize = 100;
+const DASHBOARD_EVENT_PROTOCOL_VERSION: u8 = 1;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum DashboardSseEvent {
+    Loaded {
+        id: usize,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },
+    Phase {
+        id: usize,
+        phase: String,
+    },
+    Script {
+        id: usize,
+        name: String,
+        index: usize,
+        total: usize,
+        done: bool,
+    },
+    VmProgress {
+        id: usize,
+        line: String,
+    },
+    ScriptLog {
+        id: usize,
+        line: String,
+    },
+    Finished {
+        id: usize,
+        success: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        elapsed_ms: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        output: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+}
+
+fn worker_phase_label(phase: RunPhase) -> &'static str {
+    match phase {
+        RunPhase::StartingVm => "StartingVm",
+        RunPhase::PreparingVm => "PreparingVm",
+        RunPhase::RunningScripts => "RunningScripts",
+        RunPhase::CollectingOutput => "CollectingOutput",
+        RunPhase::CleaningUp => "CleaningUp",
+    }
+}
+
+fn serialize_and_push_event<T: Serialize>(
+    sse_tx: &broadcast::Sender<String>,
+    replay: &mut VecDeque<String>,
+    event: T,
+) -> Option<String> {
+    let mut payload = serde_json::to_value(event).ok()?;
+    payload
+        .as_object_mut()?
+        .insert("protocol_version".to_string(), serde_json::json!(DASHBOARD_EVENT_PROTOCOL_VERSION));
+
+    let data = serde_json::to_string(&payload).ok()?;
+    if replay.len() >= SSE_REPLAY_CAPACITY {
+        replay.pop_front();
+    }
+    replay.push_back(data.clone());
+    let _ = sse_tx.send(data.clone());
+
+    Some(data)
+}
 
 // ── State ────────────────────────────────────────────────────────────────────
 
@@ -80,13 +152,8 @@ impl DashboardState {
         }
     }
 
-    fn push_event(&mut self, sse_tx: &broadcast::Sender<String>, event: serde_json::Value) {
-        let s = event.to_string();
-        if self.replay.len() >= SSE_REPLAY_CAPACITY {
-            self.replay.pop_front();
-        }
-        self.replay.push_back(s.clone());
-        let _ = sse_tx.send(s);
+    fn push_event<T: Serialize>(&mut self, sse_tx: &broadcast::Sender<String>, event: T) {
+        let _ = serialize_and_push_event(sse_tx, &mut self.replay, event);
     }
 }
 
@@ -239,12 +306,11 @@ async fn add_task(State(app): State<AppState>, Json(req): Json<AddTaskRequest>) 
 
     s.push_event(
         &app.sse_tx,
-        serde_json::json!({
-            "type": "loaded",
-            "id": id,
-            "name": name,
-            "description": description,
-        }),
+        DashboardSseEvent::Loaded {
+            id,
+            name,
+            description,
+        },
     );
 
     (StatusCode::CREATED, Json(serde_json::json!({"id": id}))).into_response()
@@ -301,12 +367,45 @@ async fn run_tasks(State(app): State<AppState>) -> Response {
             .collect()
     };
 
+    let mut started_any = false;
     for (id, task_path) in tasks_to_run {
         let app_clone = app.clone();
-        std::thread::Builder::new()
+        let spawn_result = std::thread::Builder::new()
             .name(format!("dashboard-task-{id}"))
-            .spawn(move || run_task_worker(id, task_path, app_clone))
-            .expect("failed to spawn task worker thread");
+            .spawn(move || run_task_worker(id, task_path, app_clone));
+        if let Err(err) = spawn_result {
+            let mut s = app.state.write().unwrap();
+            let message = format!("failed to spawn task worker thread: {err}");
+            if let Some(task) = s.tasks.iter_mut().find(|j| j.id == id) {
+                task.state = TaskState::Failed;
+                task.error = Some(message.clone());
+            }
+            s.push_event(
+                &app.sse_tx,
+                DashboardSseEvent::Finished {
+                    id,
+                    success: false,
+                    elapsed_ms: None,
+                    output: None,
+                    error: Some(message),
+                },
+            );
+            maybe_clear_running(&mut s);
+        } else {
+            started_any = true;
+        }
+    }
+
+    if !started_any {
+        let mut s = app.state.write().unwrap();
+        maybe_clear_running(&mut s);
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": "failed to start task worker threads"
+            })),
+        )
+            .into_response();
     }
 
     (
@@ -331,12 +430,13 @@ fn run_task_worker(id: usize, task_path: PathBuf, app: AppState) {
             }
             s.push_event(
                 &app.sse_tx,
-                serde_json::json!({
-                    "type": "finished",
-                    "id": id,
-                    "success": false,
-                    "error": err.to_string(),
-                }),
+                DashboardSseEvent::Finished {
+                    id,
+                    success: false,
+                    elapsed_ms: None,
+                    output: None,
+                    error: Some(err.to_string()),
+                },
             );
             maybe_clear_running(&mut s);
             return;
@@ -349,10 +449,10 @@ fn run_task_worker(id: usize, task_path: PathBuf, app: AppState) {
         if let Some(task) = s.tasks.iter_mut().find(|j| j.id == id) {
             task.state = TaskState::Running;
         }
-        s.push_event(
-            &app.sse_tx,
-            serde_json::json!({"type": "phase", "id": id, "phase": "StartingVm"}),
-        );
+        s.push_event(&app.sse_tx, DashboardSseEvent::Phase {
+            id,
+            phase: "StartingVm".to_string(),
+        });
     }
 
     // Progress forwarding thread
@@ -383,13 +483,13 @@ fn run_task_worker(id: usize, task_path: PathBuf, app: AppState) {
             }
             s.push_event(
                 &app.sse_tx,
-                serde_json::json!({
-                    "type": "finished",
-                    "id": id,
-                    "success": true,
-                    "elapsed_ms": elapsed_ms,
-                    "output": loaded.output_dir.display().to_string(),
-                }),
+                DashboardSseEvent::Finished {
+                    id,
+                    success: true,
+                    elapsed_ms: Some(elapsed_ms),
+                    output: Some(loaded.output_dir.display().to_string()),
+                    error: None,
+                },
             );
         }
         Err(err) => {
@@ -401,13 +501,13 @@ fn run_task_worker(id: usize, task_path: PathBuf, app: AppState) {
             }
             s.push_event(
                 &app.sse_tx,
-                serde_json::json!({
-                    "type": "finished",
-                    "id": id,
-                    "success": false,
-                    "elapsed_ms": elapsed_ms,
-                    "error": err_str,
-                }),
+                DashboardSseEvent::Finished {
+                    id,
+                    success: false,
+                    elapsed_ms: Some(elapsed_ms),
+                    output: None,
+                    error: Some(err_str),
+                },
             );
         }
     }
@@ -419,17 +519,14 @@ fn forward_progress(id: usize, progress: &RunProgress, app: &AppState) {
 
     let event = match progress {
         RunProgress::Phase(phase) => {
-            let label = match phase {
-                RunPhase::StartingVm => "StartingVm",
-                RunPhase::PreparingVm => "PreparingVm",
-                RunPhase::RunningScripts => "RunningScripts",
-                RunPhase::CollectingOutput => "CollectingOutput",
-                RunPhase::CleaningUp => "CleaningUp",
-            };
+            let label = worker_phase_label(*phase);
             if let Some(task) = s.tasks.iter_mut().find(|j| j.id == id) {
                 task.phase = Some(label.to_string());
             }
-            serde_json::json!({"type": "phase", "id": id, "phase": label})
+            DashboardSseEvent::Phase {
+                id,
+                phase: label.to_string(),
+            }
         }
 
         RunProgress::ScriptStarted {
@@ -442,14 +539,13 @@ fn forward_progress(id: usize, progress: &RunProgress, app: &AppState) {
                 task.script_index = *index;
                 task.script_total = *total;
             }
-            serde_json::json!({
-                "type": "script",
-                "id": id,
-                "name": script,
-                "index": index,
-                "total": total,
-                "done": false,
-            })
+            DashboardSseEvent::Script {
+                id,
+                name: script.clone(),
+                index: *index,
+                total: *total,
+                done: false,
+            }
         }
 
         RunProgress::ScriptFinished {
@@ -461,28 +557,33 @@ fn forward_progress(id: usize, progress: &RunProgress, app: &AppState) {
                 task.script_index = *index;
                 task.script_total = *total;
             }
-            serde_json::json!({
-                "type": "script",
-                "id": id,
-                "name": script,
-                "index": index,
-                "total": total,
-                "done": true,
-            })
+            DashboardSseEvent::Script {
+                id,
+                name: script.clone(),
+                index: *index,
+                total: *total,
+                done: true,
+            }
         }
 
         RunProgress::VmProgressLine { line } => {
             if let Some(task) = s.tasks.iter_mut().find(|j| j.id == id) {
                 task.vm_progress_lines.push(line.clone());
             }
-            serde_json::json!({"type": "vm_progress", "id": id, "line": line})
+            DashboardSseEvent::VmProgress {
+                id,
+                line: line.clone(),
+            }
         }
 
         RunProgress::ScriptOutputLine { line } => {
             if let Some(task) = s.tasks.iter_mut().find(|j| j.id == id) {
                 task.script_output_lines.push(line.clone());
             }
-            serde_json::json!({"type": "script_log", "id": id, "line": line})
+            DashboardSseEvent::ScriptLog {
+                id,
+                line: line.clone(),
+            }
         }
     };
 

@@ -36,7 +36,7 @@ cargo test -p vm --test integration_test test_vm_run_ssh_apt -- --nocapture
 ```
 
 ## Development Commands
-- `cargo run --release -p vm -- run --ssh-port 2222`
+- `cargo run --release -p vm -- run`
 - `cargo run --release -p vm -- ssh <vm-id> "uname -a"`
 - `cargo run --release -p vm -- cp ./file.txt <vm-id>:/tmp/file.txt`
 - `cargo run --release -p vm -- ps`

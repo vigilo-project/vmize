@@ -60,7 +60,6 @@ cargo build --release
 ```
 
 Common `run` options:
-- `--ssh-port <port>`
 - `--memory <size>`
 - `--cpus <n>`
 - `--disk-size <size>`

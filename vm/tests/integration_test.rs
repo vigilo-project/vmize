@@ -48,7 +48,7 @@ async fn test_vm_run_ssh_apt() {
     log_progress("Running vm run...");
     let vm_bin = vm_bin_path();
     let run_output = Command::new(&vm_bin)
-        .args(["run", "--username", username, "--ssh-port", "4445"])
+        .args(["run", "--username", username])
         .current_dir(project_dir())
         .output()
         .expect("Failed to run vm");
