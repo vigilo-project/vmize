@@ -51,7 +51,8 @@ fn collect_shell_scripts(dir: &Path, out: &mut Vec<PathBuf>) {
 
 #[test]
 fn run_task_with_options_example_scripts_collects_outputs() {
-    let input_dir = fixture_input_dir(&["00_print.sh", "10_result.sh"], "example/task1/scripts");
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let input_dir = manifest_dir.join("example/task1/scripts");
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_else(|_| Default::default());

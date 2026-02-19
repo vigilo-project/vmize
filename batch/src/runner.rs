@@ -133,22 +133,37 @@ where
     let run_error = match prepare_vm(&vm_id, input_dir, &progress_tx).await {
         Ok(()) => {
             send_progress(&progress_tx, RunProgress::Phase(RunPhase::RunningScripts));
-            execute_scripts(&scripts, &record, &progress_tx, &mut result)
+            execute_scripts(&scripts, &record, input_dir, &progress_tx, &mut result)
         }
         Err(err) => Some(err),
     };
 
     send_progress(&progress_tx, RunProgress::Phase(RunPhase::CollectingOutput));
-    let collect_error = vm_crate::cp_from(
+
+    // First ensure the output directory exists on the VM
+    let mkdir_result = vm_crate::ssh(
         &vm_id,
-        &format!("{}/.", VM_OUTPUT_DIR),
-        path_to_str(output_dir)?,
-        true,
+        Some(&format!("mkdir -p {}", shell_quote(VM_OUTPUT_DIR))),
     )
-    .map_err(|err| Error::CopyFromVm {
-        message: err.to_string(),
-    })
-    .err();
+    .await;
+
+    let collect_error = if let Err(err) = mkdir_result {
+        Some(Error::VmCommand {
+            message: err.to_string(),
+        })
+    } else {
+        // Use wildcard to copy all files from output directory
+        vm_crate::cp_from(
+            &vm_id,
+            &format!("{}/*", VM_OUTPUT_DIR),
+            path_to_str(output_dir)?,
+            true,
+        )
+        .map_err(|err| Error::CopyFromVm {
+            message: err.to_string(),
+        })
+        .err()
+    };
 
     // Primary run error takes precedence over collection error.
     let run_error = run_error.or(collect_error);
@@ -201,8 +216,9 @@ async fn prepare_vm(
         message: err.to_string(),
     })?;
 
-    let input_upload_path = input_dir.join(".");
-    vm_crate::cp_to(vm_id, path_to_str(&input_upload_path)?, VM_WORK_DIR, true).map_err(|err| {
+    // Copy the input directory to VM
+    // Result: /tmp/batch/work/<dirname>/ inside VM
+    vm_crate::cp_to(vm_id, path_to_str(input_dir)?, VM_WORK_DIR, true).map_err(|err| {
         Error::CopyToVm {
             message: err.to_string(),
         }
@@ -212,9 +228,17 @@ async fn prepare_vm(
 fn execute_scripts(
     scripts: &[String],
     record: &vm_crate::VmRecord,
+    input_dir: &Path,
     progress_tx: &Option<mpsc::Sender<RunProgress>>,
     result: &mut RunResult,
 ) -> Option<Error> {
+    // Get the directory name from input_dir
+    let dir_name = input_dir.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("scripts");
+
+    let vm_work_subdir = format!("{}/{}", VM_WORK_DIR, dir_name);
+
     for script_name in scripts {
         let next_index = result.executed_scripts.len() + 1;
         send_progress(
@@ -229,7 +253,7 @@ fn execute_scripts(
         let log_path = format!("{}/{}.log", VM_OUTPUT_DIR, script_name);
         let command = format!(
             "cd {} && /bin/bash {} 2>&1 | tee {}",
-            shell_quote(VM_WORK_DIR),
+            shell_quote(&vm_work_subdir),
             shell_quote(script_name),
             shell_quote(&log_path),
         );

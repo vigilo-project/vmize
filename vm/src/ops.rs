@@ -194,6 +194,7 @@ fn scp_transfer_inner(
     let remote_spec = format!("{}@127.0.0.1", record.username);
 
     let mut args = Vec::new();
+    args.push("-O");  // Use legacy SCP protocol to avoid "unexpected filename" errors
     if recursive {
         args.push("-r");
     }
