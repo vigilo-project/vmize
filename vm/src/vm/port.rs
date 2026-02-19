@@ -4,6 +4,8 @@ use std::fs::OpenOptions;
 use std::io::{ErrorKind, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::Duration;
 
 /// Maximum number of VMs allowed
 pub const MAX_VMS: usize = 10;
@@ -57,47 +59,72 @@ fn is_stale_vm_lock(lock_path: &Path) -> bool {
     !is_process_alive(lock_pid)
 }
 
-/// Acquire global lock for VM creation.
+/// Default timeout for VM creation lock acquisition (10 seconds).
+const DEFAULT_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Interval between lock acquisition attempts.
+const LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Acquire global lock for VM creation with retry.
 /// This ensures atomic VM ID allocation + port reservation + directory creation.
 ///
 /// Returns a RAII guard that releases the lock when dropped.
-/// Returns an error if another VM creation is in progress.
+/// Returns an error if the lock cannot be acquired within the timeout period.
 pub fn acquire_vm_creation_lock(instances_dir: &Path) -> Result<VmCreationLock> {
+    acquire_vm_creation_lock_with_timeout(instances_dir, DEFAULT_LOCK_TIMEOUT)
+}
+
+/// Acquire global lock for VM creation with a custom timeout.
+/// This is the internal implementation that supports configurable timeouts.
+fn acquire_vm_creation_lock_with_timeout(
+    instances_dir: &Path,
+    timeout: Duration,
+) -> Result<VmCreationLock> {
     std::fs::create_dir_all(vm_locks_dir(instances_dir))?;
 
     let lock_path = vm_creation_lock_path(instances_dir);
+    let start = std::time::Instant::now();
 
-    // Try atomic file creation
-    match OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&lock_path)
-    {
-        Ok(mut file) => {
-            file.write_all(std::process::id().to_string().as_bytes())?;
-            file.flush()?;
-            Ok(VmCreationLock { lock_path })
-        }
-        Err(err) if err.kind() == ErrorKind::AlreadyExists => {
-            // Check for stale lock
-            if is_stale_vm_lock(&lock_path) {
-                // Remove stale lock and retry
-                std::fs::remove_file(&lock_path)
-                    .context("Failed to remove stale VM creation lock")?;
-
-                // Try again
-                let mut file = OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&lock_path)?;
+    loop {
+        // Try atomic file creation
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+        {
+            Ok(mut file) => {
                 file.write_all(std::process::id().to_string().as_bytes())?;
                 file.flush()?;
-                Ok(VmCreationLock { lock_path })
-            } else {
-                bail!("Another VM creation is in progress. Please wait and retry.");
+                return Ok(VmCreationLock { lock_path });
             }
+            Err(err) if err.kind() == ErrorKind::AlreadyExists => {
+                // Check for stale lock
+                if is_stale_vm_lock(&lock_path) {
+                    // Remove stale lock and retry immediately
+                    if let Err(e) = std::fs::remove_file(&lock_path) {
+                        // Another process may have cleaned it up, just retry
+                        if e.kind() != ErrorKind::NotFound {
+                            bail!("Failed to remove stale VM creation lock: {}", e);
+                        }
+                    }
+                    // Retry immediately after cleaning up stale lock
+                    continue;
+                }
+
+                // Check timeout before waiting
+                if start.elapsed() >= timeout {
+                    bail!(
+                        "Timed out waiting for VM creation lock after {:?}. \
+                         Another VM creation may be in progress.",
+                        timeout
+                    );
+                }
+
+                // Wait and retry
+                thread::sleep(LOCK_RETRY_INTERVAL);
+            }
+            Err(err) => return Err(err).context("Failed to acquire VM creation lock"),
         }
-        Err(err) => Err(err).context("Failed to acquire VM creation lock"),
     }
 }
 
@@ -377,17 +404,48 @@ mod tests {
     }
 
     #[test]
-    fn test_acquire_vm_creation_lock_blocks_concurrent() {
+    fn test_acquire_vm_creation_lock_times_out_when_held() {
         let instances_dir = temp_instances_dir();
 
         // First lock succeeds
         let _first = acquire_vm_creation_lock(instances_dir.path()).unwrap();
 
-        // Second lock attempt should fail
-        let second = acquire_vm_creation_lock(instances_dir.path());
-        assert!(second.is_err());
-        let err = second.unwrap_err().to_string();
-        assert!(err.contains("Another VM creation is in progress"));
+        // Second lock attempt should time out with very short timeout
+        let result = acquire_vm_creation_lock_with_timeout(
+            instances_dir.path(),
+            Duration::from_millis(50),
+        );
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Timed out waiting for VM creation lock"));
+    }
+
+    #[test]
+    fn test_acquire_vm_creation_lock_succeeds_after_lock_released() {
+        let instances_dir = temp_instances_dir();
+        let instances_dir_path = instances_dir.path().to_path_buf();
+
+        // First lock succeeds
+        let first = acquire_vm_creation_lock(instances_dir.path()).unwrap();
+
+        // Spawn a thread that will release the lock after a short delay
+        let lock_path = vm_creation_lock_path(&instances_dir_path);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            // Drop the lock to release it
+            drop(first);
+        });
+
+        // Second lock attempt should succeed with a timeout that's longer than the release delay
+        let result = acquire_vm_creation_lock_with_timeout(
+            &instances_dir_path,
+            Duration::from_millis(500),
+        );
+        assert!(result.is_ok(), "Should have acquired lock after first was released");
+
+        // Verify the lock file contains our PID
+        let content = std::fs::read_to_string(&lock_path).unwrap();
+        assert_eq!(content.trim().parse::<u32>().unwrap(), std::process::id());
     }
 
     #[test]
