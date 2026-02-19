@@ -89,29 +89,37 @@ pub fn reserve_ssh_port(instances_dir: &Path, preferred_port: u16) -> Result<Ssh
     loop {
         let lock_path = ssh_port_lock_path(instances_dir, port);
 
+        // Clean up stale lock if exists
         if lock_path.exists() && is_stale_ssh_lock(&lock_path) {
             let _ = std::fs::remove_file(&lock_path);
         }
 
-        if !is_port_free(port) {
-            port = port.checked_add(1).context(format!(
-                "No available SSH ports found starting from {}.",
-                preferred_port
-            ))?;
-            continue;
-        }
-
+        // Try to create lock file first (atomic operation)
         match OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&lock_path)
         {
             Ok(mut lock_file) => {
+                // We have the lock, now verify the port is actually free
+                if !is_port_free(port) {
+                    // Port is occupied, release lock and try next port
+                    drop(lock_file);
+                    let _ = std::fs::remove_file(&lock_path);
+                    port = port.checked_add(1).context(format!(
+                        "No available SSH ports found starting from {}.",
+                        preferred_port
+                    ))?;
+                    continue;
+                }
+
+                // Port is free, write our PID and return
                 lock_file.write_all(std::process::id().to_string().as_bytes())?;
                 lock_file.flush()?;
                 return Ok(SshPortReservation { port, lock_path });
             }
             Err(err) if err.kind() == ErrorKind::AlreadyExists => {
+                // Lock file exists, try next port
                 port = port.checked_add(1).context(format!(
                     "No available SSH ports found starting from {}.",
                     preferred_port
