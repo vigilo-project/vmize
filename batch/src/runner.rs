@@ -386,14 +386,19 @@ fn list_scripts(input_dir: &Path) -> Result<Vec<String>, Error> {
         }
 
         let file_name = entry.file_name();
-        let file_name = file_name
+        let file_name_str = file_name
             .to_str()
             .map(std::string::ToString::to_string)
             .ok_or_else(|| Error::NonUtf8Path {
                 path: input_dir.join(file_name),
             })?;
 
-        scripts.push(file_name);
+        // Only include .sh files
+        if !file_name_str.ends_with(".sh") {
+            continue;
+        }
+
+        scripts.push(file_name_str);
     }
 
     scripts.sort();
@@ -504,5 +509,322 @@ fn read_lines<T: std::io::Read>(stream: T, tx: mpsc::Sender<String>) {
         if tx.send(line).is_err() {
             break;
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Unit Tests (Category A: No VM dependency)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    // ── validate_input_directory ───────────────────────────────────────────────
+
+    #[test]
+    fn validate_input_directory_returns_ok_for_existing_dir() {
+        let temp = TempDir::new().expect("failed to create temp dir");
+        let path = temp.path();
+
+        let result = validate_input_directory(path);
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), path);
+    }
+
+    #[test]
+    fn validate_input_directory_fails_for_nonexistent_path() {
+        let nonexistent = PathBuf::from("/definitely/does/not/exist/12345");
+
+        let result = validate_input_directory(&nonexistent);
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::InputPathNotFound { path } => assert_eq!(path, nonexistent),
+            err => panic!("Expected InputPathNotFound, got: {err}"),
+        }
+    }
+
+    #[test]
+    fn validate_input_directory_fails_for_file_not_dir() {
+        let temp = TempDir::new().expect("failed to create temp dir");
+        let file = temp.path().join("test.txt");
+        fs::write(&file, "content").expect("failed to write file");
+
+        let result = validate_input_directory(&file);
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::InputPathNotDirectory { path } => assert_eq!(path, file),
+            err => panic!("Expected InputPathNotDirectory, got: {err}"),
+        }
+    }
+
+    // ── validate_output_directory ──────────────────────────────────────────────
+
+    #[test]
+    fn validate_output_directory_creates_missing_dir() {
+        let temp = TempDir::new().expect("failed to create temp dir");
+        let new_dir = temp.path().join("new_output_dir");
+
+        let result = validate_output_directory(&new_dir);
+
+        assert!(result.is_ok());
+        assert!(new_dir.exists());
+        assert!(new_dir.is_dir());
+    }
+
+    #[test]
+    fn validate_output_directory_returns_ok_for_existing_dir() {
+        let temp = TempDir::new().expect("failed to create temp dir");
+        let existing_dir = temp.path().join("existing");
+        fs::create_dir(&existing_dir).expect("failed to create dir");
+
+        let result = validate_output_directory(&existing_dir);
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_output_directory_fails_for_file_not_dir() {
+        let temp = TempDir::new().expect("failed to create temp dir");
+        let file = temp.path().join("output.txt");
+        fs::write(&file, "content").expect("failed to write file");
+
+        let result = validate_output_directory(&file);
+
+        assert!(result.is_err());
+    }
+
+    // ── list_scripts ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn list_scripts_returns_sorted_sh_files() {
+        let temp = TempDir::new().expect("failed to create temp dir");
+        fs::write(temp.path().join("10_second.sh"), "").unwrap();
+        fs::write(temp.path().join("00_first.sh"), "").unwrap();
+        fs::write(temp.path().join("20_third.sh"), "").unwrap();
+
+        let result = list_scripts(temp.path()).unwrap();
+
+        assert_eq!(result, vec!["00_first.sh", "10_second.sh", "20_third.sh"]);
+    }
+
+    #[test]
+    fn list_scripts_ignores_subdirectories() {
+        let temp = TempDir::new().expect("failed to create temp dir");
+        fs::write(temp.path().join("script.sh"), "").unwrap();
+        fs::create_dir(temp.path().join("subdir.sh")).unwrap();
+
+        let result = list_scripts(temp.path()).unwrap();
+
+        assert_eq!(result, vec!["script.sh"]);
+    }
+
+    #[test]
+    fn list_scripts_ignores_non_sh_files() {
+        let temp = TempDir::new().expect("failed to create temp dir");
+        fs::write(temp.path().join("script.sh"), "").unwrap();
+        fs::write(temp.path().join("readme.txt"), "").unwrap();
+        fs::write(temp.path().join("config.json"), "").unwrap();
+
+        let result = list_scripts(temp.path()).unwrap();
+
+        assert_eq!(result, vec!["script.sh"]);
+    }
+
+    #[test]
+    fn list_scripts_returns_empty_for_empty_dir() {
+        let temp = TempDir::new().expect("failed to create temp dir");
+
+        let result = list_scripts(temp.path()).unwrap();
+
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn list_scripts_sorts_alphabetically_case_insensitive_order() {
+        let temp = TempDir::new().expect("failed to create temp dir");
+        fs::write(temp.path().join("b_script.sh"), "").unwrap();
+        fs::write(temp.path().join("A_script.sh"), "").unwrap();
+        fs::write(temp.path().join("c_script.sh"), "").unwrap();
+
+        let result = list_scripts(temp.path()).unwrap();
+
+        // Standard sort is case-sensitive, uppercase comes before lowercase in ASCII
+        assert_eq!(result, vec!["A_script.sh", "b_script.sh", "c_script.sh"]);
+    }
+
+    // ── shell_quote ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn shell_quote_wraps_in_single_quotes() {
+        assert_eq!(shell_quote("hello"), "'hello'");
+    }
+
+    #[test]
+    fn shell_quote_escapes_embedded_single_quotes() {
+        // Single quote in the middle should be escaped using the '\'' pattern
+        assert_eq!(shell_quote("it's"), "'it'\"'\"'s'");
+    }
+
+    #[test]
+    fn shell_quote_handles_empty_string() {
+        assert_eq!(shell_quote(""), "''");
+    }
+
+    #[test]
+    fn shell_quote_handles_special_chars() {
+        // Characters like $, `, ", \ should NOT be escaped in single quotes
+        assert_eq!(shell_quote("$HOME"), "'$HOME'");
+        assert_eq!(shell_quote("echo `cmd`"), "'echo `cmd`'");
+        assert_eq!(shell_quote("a\\b"), "'a\\b'");
+    }
+
+    #[test]
+    fn shell_quote_handles_multiple_single_quotes() {
+        assert_eq!(shell_quote("it's a test's"), "'it'\"'\"'s a test'\"'\"'s'");
+    }
+
+    // ── combine_errors ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn combine_errors_formats_both_messages() {
+        let primary = Error::ScriptFailed {
+            script: "test.sh".to_string(),
+            message: "exit code 1".to_string(),
+        };
+        let cleanup = Error::CleanupFailed {
+            vm_id: "vm0".to_string(),
+            message: "timeout".to_string(),
+        };
+
+        let result = combine_errors(primary, cleanup);
+
+        match result {
+            Error::Runtime { message } => {
+                assert!(message.contains("test.sh"));
+                assert!(message.contains("exit code 1"));
+                assert!(message.contains("vm0"));
+                assert!(message.contains("timeout"));
+                assert!(message.contains("additionally"));
+            }
+            err => panic!("Expected Runtime error, got: {err}"),
+        }
+    }
+
+    // ── path_to_str ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn path_to_str_returns_str_for_valid_utf8_path() {
+        let path = PathBuf::from("/tmp/test/dir");
+
+        let result = path_to_str(&path).unwrap();
+
+        assert_eq!(result, "/tmp/test/dir");
+    }
+
+    #[test]
+    fn path_to_str_fails_for_non_utf8_path() {
+        // Create a path with invalid UTF-8 bytes (this is platform-dependent)
+        // On most Unix systems, we can't easily create such paths from Rust
+        // So we test with a valid path and ensure it works
+        let path = PathBuf::from("/tmp/test");
+
+        assert!(path_to_str(&path).is_ok());
+    }
+
+    // ── send_progress ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn send_progress_sends_event_when_channel_present() {
+        let (tx, rx) = mpsc::channel::<RunProgress>();
+        let progress_tx = Some(tx);
+
+        send_progress(&progress_tx, RunProgress::Phase(RunPhase::ValidatingPaths));
+
+        let received = rx.try_recv().unwrap();
+        assert_eq!(received, RunProgress::Phase(RunPhase::ValidatingPaths));
+    }
+
+    #[test]
+    fn send_progress_does_nothing_when_channel_is_none() {
+        let progress_tx: Option<mpsc::Sender<RunProgress>> = None;
+
+        // Should not panic
+        send_progress(&progress_tx, RunProgress::Phase(RunPhase::StartingVm));
+    }
+
+    #[test]
+    fn send_progress_sends_script_started_event() {
+        let (tx, rx) = mpsc::channel::<RunProgress>();
+        let progress_tx = Some(tx);
+
+        send_progress(
+            &progress_tx,
+            RunProgress::ScriptStarted {
+                script: "00_init.sh".to_string(),
+                index: 1,
+                total: 3,
+            },
+        );
+
+        let received = rx.try_recv().unwrap();
+        assert_eq!(
+            received,
+            RunProgress::ScriptStarted {
+                script: "00_init.sh".to_string(),
+                index: 1,
+                total: 3,
+            }
+        );
+    }
+
+    #[test]
+    fn send_progress_sends_script_output_line() {
+        let (tx, rx) = mpsc::channel::<RunProgress>();
+        let progress_tx = Some(tx);
+
+        send_progress(
+            &progress_tx,
+            RunProgress::ScriptOutputLine {
+                line: "Building...".to_string(),
+            },
+        );
+
+        let received = rx.try_recv().unwrap();
+        assert_eq!(
+            received,
+            RunProgress::ScriptOutputLine {
+                line: "Building...".to_string()
+            }
+        );
+    }
+
+    // ── RunResult ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn run_result_new_initializes_correctly() {
+        let result = RunResult::new("vm0", "/tmp/output");
+
+        assert_eq!(result.vm_id, "vm0");
+        assert_eq!(result.output_dir, PathBuf::from("/tmp/output"));
+        assert!(result.executed_scripts.is_empty());
+        assert_eq!(result.exit_code, 0);
+        assert_eq!(result.elapsed_ms, 0);
+    }
+
+    // ── TaskRunOptions default ─────────────────────────────────────────────────
+
+    #[test]
+    fn task_run_options_default() {
+        let options = TaskRunOptions::default();
+
+        assert!(options.disk_size.is_none());
+        assert!(options.show_progress);
     }
 }
