@@ -731,6 +731,46 @@ mod tests {
         );
     }
 
+    #[test]
+    fn push_event_includes_protocol_version() {
+        let (app, mut rx) = make_app();
+        {
+            let mut s = app.state.write().unwrap();
+            s.push_event(
+                &app.sse_tx,
+                DashboardSseEvent::Loaded {
+                    id: 3,
+                    name: Some("task-x".into()),
+                    description: Some("desc".into()),
+                },
+            );
+        }
+
+        let evt: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+        assert_eq!(evt["type"], "loaded");
+        assert_eq!(evt["protocol_version"], 1);
+    }
+
+    #[test]
+    fn forward_progress_phase_emits_protocol_version() {
+        let (app, mut rx) = make_app();
+        {
+            let mut s = app.state.write().unwrap();
+            s.tasks.push(make_task(0, TaskState::Running));
+        }
+
+        forward_progress(
+            0,
+            &RunProgress::Phase(RunPhase::StartingVm),
+            &app,
+        );
+
+        let evt: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+        assert_eq!(evt["type"], "phase");
+        assert_eq!(evt["id"], 0);
+        assert_eq!(evt["protocol_version"], 1);
+    }
+
     // ── maybe_clear_running ───────────────────────────────────────────────────
 
     #[test]
