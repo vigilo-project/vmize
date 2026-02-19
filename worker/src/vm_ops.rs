@@ -12,7 +12,7 @@ use std::sync::Mutex;
 pub use vm::VmRecord;
 
 /// Options for VM creation (mirrors vm::RunOptions).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct VmOptions {
     pub disk_size: Option<String>,
     pub show_progress: bool,
@@ -192,6 +192,8 @@ pub mod mock {
         run_record: Mutex<Option<VmRecord>>,
         /// Error message to return from run() (takes precedence over record)
         run_error: Mutex<Option<String>>,
+        /// Captured options for run() calls
+        run_calls: Mutex<Vec<VmOptions>>,
 
         /// Queue of results for ssh() calls
         ssh_results: Mutex<VecDeque<Result<String>>>,
@@ -221,6 +223,7 @@ pub mod mock {
             Self {
                 run_record: Mutex::new(Some(mock_vm_record("vm0"))),
                 run_error: Mutex::new(None),
+                run_calls: Mutex::new(Vec::new()),
                 ssh_results: Mutex::new(VecDeque::new()),
                 cp_to_error: Mutex::new(None),
                 cp_from_error: Mutex::new(None),
@@ -302,8 +305,14 @@ pub mod mock {
             self.rm_calls.lock().unwrap().clone()
         }
 
+        /// Get all run options calls
+        pub fn run_calls(&self) -> Vec<VmOptions> {
+            self.run_calls.lock().unwrap().clone()
+        }
+
         /// Clear all recorded calls
         pub fn clear_calls(&self) {
+            self.run_calls.lock().unwrap().clear();
             self.ssh_commands.lock().unwrap().clear();
             self.cp_to_calls.lock().unwrap().clear();
             self.cp_from_calls.lock().unwrap().clear();
@@ -319,7 +328,8 @@ pub mod mock {
     }
 
     impl VmOps for MockVmOps {
-        async fn run(&self, _options: VmOptions) -> Result<VmRecord> {
+        async fn run(&self, options: VmOptions) -> Result<VmRecord> {
+            self.run_calls.lock().unwrap().push(options);
             if let Some(err) = self.run_error.lock().unwrap().as_ref() {
                 return Err(anyhow::anyhow!(err.clone()));
             }

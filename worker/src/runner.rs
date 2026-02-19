@@ -115,11 +115,15 @@ pub async fn run_loaded_task_with_ops<V: VmOps + ?Sized>(
     let input_dir = &task.input_dir;
     let output_dir = &task.output_dir;
     let logs_dir = &task.logs_dir;
+    let effective_disk_size = options
+        .disk_size
+        .clone()
+        .or_else(|| task.definition.disk_size.clone());
 
     send_progress(&progress_tx, RunProgress::Phase(RunPhase::StartingVm));
     let record = vm_ops
         .run(VmOptions {
-            disk_size: options.disk_size,
+            disk_size: effective_disk_size,
             show_progress: options.show_progress,
         })
         .await
@@ -728,5 +732,58 @@ mod tests {
 
         let stream_commands = mock.stream_commands.lock().unwrap().clone();
         assert!(stream_commands.iter().any(|cmd| cmd.contains("/bin/bash")));
+    }
+
+    #[test]
+    fn run_loaded_task_with_ops_uses_task_definition_disk_size_when_option_missing() {
+        let (_temp, mut task) = create_test_loaded_task(&["00_first.sh"]);
+        task.definition.disk_size = Some("20G".to_string());
+
+        let mock = MockVmOps::new()
+            .with_run_ok("test-vm")
+            .with_ssh_ok("")
+            .with_stream_outputs(vec!["output"]);
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _ = rt
+            .block_on(run_loaded_task_with_ops(
+                &mock,
+                &task,
+                TaskRunOptions::default(),
+                None,
+            ))
+            .unwrap();
+
+        let run_calls = mock.run_calls();
+        assert_eq!(run_calls.len(), 1);
+        assert_eq!(run_calls[0].disk_size, Some("20G".to_string()));
+    }
+
+    #[test]
+    fn run_loaded_task_with_ops_prefers_option_disk_size_over_task_definition() {
+        let (_temp, mut task) = create_test_loaded_task(&["00_first.sh"]);
+        task.definition.disk_size = Some("20G".to_string());
+
+        let mock = MockVmOps::new()
+            .with_run_ok("test-vm")
+            .with_ssh_ok("")
+            .with_stream_outputs(vec!["output"]);
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _ = rt
+            .block_on(run_loaded_task_with_ops(
+                &mock,
+                &task,
+                TaskRunOptions {
+                    disk_size: Some("30G".to_string()),
+                    ..Default::default()
+                },
+                None,
+            ))
+            .unwrap();
+
+        let run_calls = mock.run_calls();
+        assert_eq!(run_calls.len(), 1);
+        assert_eq!(run_calls[0].disk_size, Some("30G".to_string()));
     }
 }
