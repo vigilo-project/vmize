@@ -1,13 +1,9 @@
 use std::fs;
-use std::io::{BufRead, BufReader};
 use std::path::Path;
-use std::process::{Command, Stdio};
 use std::sync::mpsc;
-use std::thread;
 use std::time::Instant;
 
-use vm as vm_crate;
-
+use crate::vm_ops::{VmOps, VmOptions};
 use crate::{Error, RunResult};
 
 const VM_WORK_DIR: &str = "/tmp/batch/work";
@@ -61,6 +57,10 @@ pub enum RunProgress {
     },
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// Public API (uses RealVmOps by default)
+// ═══════════════════════════════════════════════════════════════════════════════
+
 pub async fn run_task<Pi, Po>(input: Pi, output: Po) -> Result<RunResult, Error>
 where
     Pi: AsRef<Path>,
@@ -85,208 +85,20 @@ pub async fn run_task_with_progress<Pi, Po>(
     input: Pi,
     output: Po,
     options: TaskRunOptions,
-    progress_tx: Option<std::sync::mpsc::Sender<RunProgress>>,
+    progress_tx: Option<mpsc::Sender<RunProgress>>,
 ) -> Result<RunResult, Error>
 where
     Pi: AsRef<Path>,
     Po: AsRef<Path>,
 {
-    let start = Instant::now();
-    let input_dir = input.as_ref();
-    let output_dir = output.as_ref();
-
-    send_progress(&progress_tx, RunProgress::Phase(RunPhase::ValidatingPaths));
-    let input_dir = validate_input_directory(input_dir)?;
-    validate_output_directory(output_dir)?;
-
-    let scripts = list_scripts(input_dir)?;
-    if scripts.is_empty() {
-        return Err(Error::NoScripts(input_dir.to_path_buf()));
-    }
-
-    let on_progress: vm_crate::ProgressCallback = progress_tx.as_ref().map(|tx| {
-        let tx = tx.clone();
-        Box::new(move |step: u8, total: u8, msg: &str| {
-            let _ = tx.send(RunProgress::VmProgressLine {
-                line: format!("[{step}/{total}] {msg}"),
-            });
-        }) as Box<dyn Fn(u8, u8, &str) + Send>
-    });
-
-    let vm_options = vm_crate::RunOptions {
-        disk_size: options.disk_size,
-        show_progress: options.show_progress,
-        on_progress,
-        ..Default::default()
-    };
-
-    send_progress(&progress_tx, RunProgress::Phase(RunPhase::StartingVm));
-    let record = vm_crate::run(vm_options)
-        .await
-        .map_err(|err| Error::VmStart {
-            message: err.to_string(),
-        })?;
-
-    let vm_id = record.id.clone();
-    let mut result = RunResult::new(&vm_id, output_dir.to_path_buf());
-
-    let run_error = match prepare_vm(&vm_id, input_dir, &progress_tx).await {
-        Ok(()) => {
-            send_progress(&progress_tx, RunProgress::Phase(RunPhase::RunningScripts));
-            execute_scripts(&scripts, &record, input_dir, &progress_tx, &mut result)
-        }
-        Err(err) => Some(err),
-    };
-
-    send_progress(&progress_tx, RunProgress::Phase(RunPhase::CollectingOutput));
-
-    // First ensure the output directory exists on the VM
-    let mkdir_result = vm_crate::ssh(
-        &vm_id,
-        Some(&format!("mkdir -p {}", shell_quote(VM_OUTPUT_DIR))),
-    )
-    .await;
-
-    let collect_error = if let Err(err) = mkdir_result {
-        Some(Error::VmCommand {
-            message: err.to_string(),
-        })
-    } else {
-        // Use wildcard to copy all files from output directory
-        vm_crate::cp_from(
-            &vm_id,
-            &format!("{}/*", VM_OUTPUT_DIR),
-            path_to_str(output_dir)?,
-            true,
-        )
-        .map_err(|err| Error::CopyFromVm {
-            message: err.to_string(),
-        })
-        .err()
-    };
-
-    // Primary run error takes precedence over collection error.
-    let run_error = run_error.or(collect_error);
-
-    send_progress(&progress_tx, RunProgress::Phase(RunPhase::CleaningUp));
-    let cleanup_result = vm_crate::rm(Some(&vm_id)).map_err(|err| Error::CleanupFailed {
-        vm_id: vm_id.clone(),
-        message: err.to_string(),
-    });
-
-    result.elapsed_ms = start.elapsed().as_millis() as u64;
-
-    match (run_error, cleanup_result) {
-        (Some(err), Ok(_)) => {
-            result.exit_code = 1;
-            Err(err)
-        }
-        (None, Err(err)) => {
-            result.exit_code = 1;
-            Err(err)
-        }
-        (Some(run_err), Err(cleanup_err)) => {
-            result.exit_code = 1;
-            Err(combine_errors(run_err, cleanup_err))
-        }
-        (None, Ok(_)) => {
-            result.exit_code = 0;
-            Ok(result)
-        }
-    }
-}
-
-async fn prepare_vm(
-    vm_id: &str,
-    input_dir: &Path,
-    progress_tx: &Option<mpsc::Sender<RunProgress>>,
-) -> Result<(), Error> {
-    send_progress(progress_tx, RunProgress::Phase(RunPhase::PreparingVm));
-
-    vm_crate::ssh(
-        vm_id,
-        Some(&format!(
-            "mkdir -p {} {}",
-            shell_quote(VM_WORK_DIR),
-            shell_quote(VM_OUTPUT_DIR)
-        )),
+    run_task_with_ops(
+        &crate::vm_ops::RealVmOps,
+        input.as_ref(),
+        output.as_ref(),
+        options,
+        progress_tx,
     )
     .await
-    .map_err(|err| Error::VmCommand {
-        message: err.to_string(),
-    })?;
-
-    // Copy the input directory to VM
-    // Result: /tmp/batch/work/<dirname>/ inside VM
-    vm_crate::cp_to(vm_id, path_to_str(input_dir)?, VM_WORK_DIR, true).map_err(|err| {
-        Error::CopyToVm {
-            message: err.to_string(),
-        }
-    })
-}
-
-fn execute_scripts(
-    scripts: &[String],
-    record: &vm_crate::VmRecord,
-    input_dir: &Path,
-    progress_tx: &Option<mpsc::Sender<RunProgress>>,
-    result: &mut RunResult,
-) -> Option<Error> {
-    // Get the directory name from input_dir
-    let dir_name = input_dir.file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("scripts");
-
-    let vm_work_subdir = format!("{}/{}", VM_WORK_DIR, dir_name);
-
-    for script_name in scripts {
-        let next_index = result.executed_scripts.len() + 1;
-        send_progress(
-            progress_tx,
-            RunProgress::ScriptStarted {
-                script: script_name.clone(),
-                index: next_index,
-                total: scripts.len(),
-            },
-        );
-
-        let log_path = format!("{}/{}.log", VM_OUTPUT_DIR, script_name);
-        let command = format!(
-            "cd {} && /bin/bash {} 2>&1 | tee {}",
-            shell_quote(&vm_work_subdir),
-            shell_quote(script_name),
-            shell_quote(&log_path),
-        );
-
-        let progress_tx_for_logs = progress_tx.clone();
-        let stream_result = ssh_stream_command_with_logs(record, &command, |line| {
-            if let Some(tx) = &progress_tx_for_logs {
-                let _ = tx.send(RunProgress::ScriptOutputLine { line });
-            } else {
-                println!("{line}");
-            }
-        });
-
-        if let Err(err) = stream_result {
-            return Some(Error::ScriptFailed {
-                script: script_name.clone(),
-                message: err,
-            });
-        }
-
-        result.executed_scripts.push(script_name.clone());
-        let finished_index = result.executed_scripts.len();
-        send_progress(
-            progress_tx,
-            RunProgress::ScriptFinished {
-                script: script_name.clone(),
-                index: finished_index,
-                total: scripts.len(),
-            },
-        );
-    }
-
-    None
 }
 
 pub fn run_task_blocking<Pi, Po>(input: Pi, output: Po) -> Result<RunResult, Error>
@@ -313,7 +125,7 @@ pub fn run_task_blocking_with_progress<Pi, Po>(
     input: Pi,
     output: Po,
     options: TaskRunOptions,
-    progress_tx: Option<std::sync::mpsc::Sender<RunProgress>>,
+    progress_tx: Option<mpsc::Sender<RunProgress>>,
 ) -> Result<RunResult, Error>
 where
     Pi: AsRef<Path>,
@@ -329,6 +141,208 @@ where
 
     runtime.block_on(run_task_with_progress(input, output, options, progress_tx))
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Core Implementation (uses VmOps trait)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Core task runner that accepts a VmOps implementation.
+/// This enables unit testing with MockVmOps.
+pub async fn run_task_with_ops<V: VmOps + ?Sized>(
+    vm_ops: &V,
+    input_dir: &Path,
+    output_dir: &Path,
+    options: TaskRunOptions,
+    progress_tx: Option<mpsc::Sender<RunProgress>>,
+) -> Result<RunResult, Error> {
+    let start = Instant::now();
+
+    send_progress(&progress_tx, RunProgress::Phase(RunPhase::ValidatingPaths));
+    let input_dir = validate_input_directory(input_dir)?;
+    validate_output_directory(output_dir)?;
+
+    let scripts = list_scripts(input_dir)?;
+    if scripts.is_empty() {
+        return Err(Error::NoScripts(input_dir.to_path_buf()));
+    }
+
+    send_progress(&progress_tx, RunProgress::Phase(RunPhase::StartingVm));
+    let record = vm_ops
+        .run(VmOptions {
+            disk_size: options.disk_size,
+            show_progress: options.show_progress,
+        })
+        .await
+        .map_err(|err| Error::VmStart {
+            message: err.to_string(),
+        })?;
+
+    let vm_id = record.id.clone();
+    let mut result = RunResult::new(&vm_id, output_dir.to_path_buf());
+
+    let run_error = match prepare_vm_with_ops(vm_ops, &vm_id, input_dir, &progress_tx).await {
+        Ok(()) => {
+            send_progress(&progress_tx, RunProgress::Phase(RunPhase::RunningScripts));
+            execute_scripts_with_ops(vm_ops, &scripts, &record, input_dir, &progress_tx, &mut result)
+        }
+        Err(err) => Some(err),
+    };
+
+    send_progress(&progress_tx, RunProgress::Phase(RunPhase::CollectingOutput));
+
+    // First ensure the output directory exists on the VM
+    let mkdir_result = vm_ops.ssh(&vm_id, &format!("mkdir -p {}", shell_quote(VM_OUTPUT_DIR))).await;
+
+    let collect_error = if let Err(err) = mkdir_result {
+        Some(Error::VmCommand {
+            message: err.to_string(),
+        })
+    } else {
+        // Use wildcard to copy all files from output directory
+        vm_ops
+            .cp_from(
+                &vm_id,
+                &format!("{}/*", VM_OUTPUT_DIR),
+                path_to_str(output_dir)?,
+                true,
+            )
+            .map_err(|err| Error::CopyFromVm {
+                message: err.to_string(),
+            })
+            .err()
+    };
+
+    // Primary run error takes precedence over collection error.
+    let run_error = run_error.or(collect_error);
+
+    send_progress(&progress_tx, RunProgress::Phase(RunPhase::CleaningUp));
+    let cleanup_result = vm_ops.rm(&vm_id).map_err(|err| Error::CleanupFailed {
+        vm_id: vm_id.clone(),
+        message: err.to_string(),
+    });
+
+    result.elapsed_ms = start.elapsed().as_millis() as u64;
+
+    match (run_error, cleanup_result) {
+        (Some(err), Ok(_)) => {
+            result.exit_code = 1;
+            Err(err)
+        }
+        (None, Err(err)) => {
+            result.exit_code = 1;
+            Err(err)
+        }
+        (Some(run_err), Err(cleanup_err)) => {
+            result.exit_code = 1;
+            Err(combine_errors(run_err, cleanup_err))
+        }
+        (None, Ok(_)) => {
+            result.exit_code = 0;
+            Ok(result)
+        }
+    }
+}
+
+async fn prepare_vm_with_ops<V: VmOps + ?Sized>(
+    vm_ops: &V,
+    vm_id: &str,
+    input_dir: &Path,
+    progress_tx: &Option<mpsc::Sender<RunProgress>>,
+) -> Result<(), Error> {
+    send_progress(progress_tx, RunProgress::Phase(RunPhase::PreparingVm));
+
+    vm_ops
+        .ssh(
+            vm_id,
+            &format!(
+                "mkdir -p {} {}",
+                shell_quote(VM_WORK_DIR),
+                shell_quote(VM_OUTPUT_DIR)
+            ),
+        )
+        .await
+        .map_err(|err| Error::VmCommand {
+            message: err.to_string(),
+        })?;
+
+    // Copy the input directory to VM
+    // Result: /tmp/batch/work/<dirname>/ inside VM
+    vm_ops
+        .cp_to(vm_id, path_to_str(input_dir)?, VM_WORK_DIR, true)
+        .map_err(|err| Error::CopyToVm {
+            message: err.to_string(),
+        })
+}
+
+fn execute_scripts_with_ops<V: VmOps + ?Sized>(
+    vm_ops: &V,
+    scripts: &[String],
+    record: &vm::VmRecord,
+    input_dir: &Path,
+    progress_tx: &Option<mpsc::Sender<RunProgress>>,
+    result: &mut RunResult,
+) -> Option<Error> {
+    // Get the directory name from input_dir
+    let dir_name = input_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("scripts");
+
+    let vm_work_subdir = format!("{}/{}", VM_WORK_DIR, dir_name);
+
+    for script_name in scripts {
+        let next_index = result.executed_scripts.len() + 1;
+        send_progress(
+            progress_tx,
+            RunProgress::ScriptStarted {
+                script: script_name.clone(),
+                index: next_index,
+                total: scripts.len(),
+            },
+        );
+
+        let log_path = format!("{}/{}.log", VM_OUTPUT_DIR, script_name);
+        let command = format!(
+            "cd {} && /bin/bash {} 2>&1 | tee {}",
+            shell_quote(&vm_work_subdir),
+            shell_quote(script_name),
+            shell_quote(&log_path),
+        );
+
+        let progress_tx_for_logs = progress_tx.clone();
+        let stream_result = vm_ops.ssh_stream(record, &command, |line| {
+            if let Some(tx) = &progress_tx_for_logs {
+                let _ = tx.send(RunProgress::ScriptOutputLine { line });
+            } else {
+                println!("{line}");
+            }
+        });
+
+        if let Err(err) = stream_result {
+            return Some(Error::ScriptFailed {
+                script: script_name.clone(),
+                message: err.to_string(),
+            });
+        }
+
+        result.executed_scripts.push(script_name.clone());
+        let finished_index = result.executed_scripts.len();
+        send_progress(
+            progress_tx,
+            RunProgress::ScriptFinished {
+                script: script_name.clone(),
+                index: finished_index,
+                total: scripts.len(),
+            },
+        );
+    }
+
+    None
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Helper Functions
+// ═══════════════════════════════════════════════════════════════════════════════
 
 fn validate_input_directory(path: &Path) -> Result<&Path, Error> {
     if !path.exists() {
@@ -424,101 +438,20 @@ fn combine_errors(primary: Error, cleanup: Error) -> Error {
     }
 }
 
-fn send_progress(progress_tx: &Option<std::sync::mpsc::Sender<RunProgress>>, event: RunProgress) {
+fn send_progress(progress_tx: &Option<mpsc::Sender<RunProgress>>, event: RunProgress) {
     if let Some(tx) = progress_tx {
         let _ = tx.send(event);
     }
 }
 
-fn ssh_stream_command_with_logs<F>(
-    record: &vm_crate::VmRecord,
-    command: &str,
-    mut on_line: F,
-) -> Result<(), String>
-where
-    F: FnMut(String),
-{
-    let mut child = Command::new("ssh")
-        .args([
-            "-i",
-            &record.private_key_path,
-            "-p",
-            &record.ssh_port.to_string(),
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "StrictHostKeyChecking=no",
-            "-o",
-            "UserKnownHostsFile=/dev/null",
-            "-o",
-            "ConnectTimeout=10",
-            &format!("{}@127.0.0.1", record.username.as_str()),
-            "--",
-            command,
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|err| format!("failed to run ssh: {err}"))?;
-
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "failed to capture ssh stdout".to_string())?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| "failed to capture ssh stderr".to_string())?;
-
-    let (line_tx, line_rx) = mpsc::channel::<String>();
-    let stdout_tx = line_tx.clone();
-    let stdout_reader = thread::spawn(move || {
-        read_lines(stdout, stdout_tx);
-    });
-
-    let stderr_tx = line_tx.clone();
-    let stderr_reader = thread::spawn(move || {
-        read_lines(stderr, stderr_tx);
-    });
-
-    drop(line_tx);
-
-    for line in line_rx {
-        on_line(line);
-    }
-
-    let status = child
-        .wait()
-        .map_err(|err| format!("failed waiting for ssh process: {err}"))?;
-    let _ = stdout_reader.join();
-    let _ = stderr_reader.join();
-
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "Command failed with status {}",
-            status.code().unwrap_or(-1)
-        ))
-    }
-}
-
-fn read_lines<T: std::io::Read>(stream: T, tx: mpsc::Sender<String>) {
-    for line in BufReader::new(stream).lines().map_while(Result::ok) {
-        if tx.send(line).is_err() {
-            break;
-        }
-    }
-}
-
 // ═══════════════════════════════════════════════════════════════════════════════
-// Unit Tests (Category A: No VM dependency)
+// Unit Tests
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vm_ops::MockVmOps;
     use std::fs;
     use std::path::PathBuf;
     use tempfile::TempDir;
@@ -687,7 +620,10 @@ mod tests {
 
     #[test]
     fn shell_quote_handles_multiple_single_quotes() {
-        assert_eq!(shell_quote("it's a test's"), "'it'\"'\"'s a test'\"'\"'s'");
+        assert_eq!(
+            shell_quote("it's a test's"),
+            "'it'\"'\"'s a test'\"'\"'s'"
+        );
     }
 
     // ── combine_errors ─────────────────────────────────────────────────────────
@@ -826,5 +762,276 @@ mod tests {
 
         assert!(options.disk_size.is_none());
         assert!(options.show_progress);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Category B: Mock-based Tests
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    fn create_test_scripts_dir() -> TempDir {
+        let temp = TempDir::new().expect("failed to create temp dir");
+        let scripts_dir = temp.path().join("scripts");
+        fs::create_dir(&scripts_dir).unwrap();
+        fs::write(scripts_dir.join("00_first.sh"), "#!/bin/bash\necho first").unwrap();
+        fs::write(scripts_dir.join("10_second.sh"), "#!/bin/bash\necho second").unwrap();
+        temp
+    }
+
+    #[test]
+    fn run_task_with_ops_returns_success_on_happy_path() {
+        let temp = create_test_scripts_dir();
+        let input_dir = temp.path().join("scripts");
+        let output_dir = temp.path().join("output");
+
+        let mock = MockVmOps::new()
+            .with_run_ok("test-vm")
+            .with_ssh_ok("")   // mkdir
+            .with_ssh_ok("")   // mkdir for output
+            .with_stream_outputs(vec!["first output"])
+            .with_stream_outputs(vec!["second output"]);
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt
+            .block_on(run_task_with_ops(
+                &mock,
+                &input_dir,
+                &output_dir,
+                TaskRunOptions::default(),
+                None,
+            ))
+            .unwrap();
+
+        assert_eq!(result.vm_id, "test-vm");
+        assert_eq!(result.exit_code, 0);
+        assert_eq!(result.executed_scripts, vec!["00_first.sh", "10_second.sh"]);
+
+        // Verify rm was called
+        let rm_calls = mock.rm_calls();
+        assert_eq!(rm_calls, vec!["test-vm"]);
+    }
+
+    #[test]
+    fn run_task_with_ops_fails_on_vm_start_error() {
+        let temp = create_test_scripts_dir();
+        let input_dir = temp.path().join("scripts");
+        let output_dir = temp.path().join("output");
+
+        let mock = MockVmOps::new().with_run_err("QEMU failed to start");
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(run_task_with_ops(
+            &mock,
+            &input_dir,
+            &output_dir,
+            TaskRunOptions::default(),
+            None,
+        ));
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::VmStart { message } => assert!(message.contains("QEMU failed")),
+            err => panic!("Expected VmStart error, got: {err}"),
+        }
+    }
+
+    #[test]
+    fn run_task_with_ops_fails_on_prepare_vm_error() {
+        let temp = create_test_scripts_dir();
+        let input_dir = temp.path().join("scripts");
+        let output_dir = temp.path().join("output");
+
+        let mock = MockVmOps::new()
+            .with_run_ok("test-vm")
+            .with_ssh_err("SSH connection failed"); // mkdir fails
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(run_task_with_ops(
+            &mock,
+            &input_dir,
+            &output_dir,
+            TaskRunOptions::default(),
+            None,
+        ));
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::VmCommand { message } => assert!(message.contains("SSH connection failed")),
+            err => panic!("Expected VmCommand error, got: {err}"),
+        }
+
+        // Verify cleanup still happened
+        let rm_calls = mock.rm_calls();
+        assert_eq!(rm_calls, vec!["test-vm"]);
+    }
+
+    #[test]
+    fn run_task_with_ops_fails_on_script_error() {
+        let temp = create_test_scripts_dir();
+        let input_dir = temp.path().join("scripts");
+        let output_dir = temp.path().join("output");
+
+        let mock = MockVmOps::new()
+            .with_run_ok("test-vm")
+            .with_ssh_ok("")  // mkdir
+            .with_cp_to_err("copy failed"); // cp_to fails
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(run_task_with_ops(
+            &mock,
+            &input_dir,
+            &output_dir,
+            TaskRunOptions::default(),
+            None,
+        ));
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::CopyToVm { message } => assert!(message.contains("copy failed")),
+            err => panic!("Expected CopyToVm error, got: {err}"),
+        }
+
+        // Verify cleanup still happened
+        let rm_calls = mock.rm_calls();
+        assert_eq!(rm_calls, vec!["test-vm"]);
+    }
+
+    #[test]
+    fn run_task_with_ops_cleans_up_on_failure() {
+        let temp = create_test_scripts_dir();
+        let input_dir = temp.path().join("scripts");
+        let output_dir = temp.path().join("output");
+
+        let mock = MockVmOps::new().with_run_err("failed");
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _ = rt.block_on(run_task_with_ops(
+            &mock,
+            &input_dir,
+            &output_dir,
+            TaskRunOptions::default(),
+            None,
+        ));
+
+        // No rm call because VM never started
+        let rm_calls = mock.rm_calls();
+        assert!(rm_calls.is_empty());
+    }
+
+    #[test]
+    fn run_task_with_ops_sends_progress_events() {
+        let temp = create_test_scripts_dir();
+        let input_dir = temp.path().join("scripts");
+        let output_dir = temp.path().join("output");
+
+        let mock = MockVmOps::new()
+            .with_run_ok("test-vm")
+            .with_ssh_ok("")
+            .with_stream_outputs(vec!["output"]);
+
+        let (tx, rx) = mpsc::channel::<RunProgress>();
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _ = rt.block_on(run_task_with_ops(
+            &mock,
+            &input_dir,
+            &output_dir,
+            TaskRunOptions::default(),
+            Some(tx),
+        ));
+
+        // Collect all progress events
+        let events: Vec<_> = rx.try_iter().collect();
+
+        // Verify phase progression
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, RunProgress::Phase(RunPhase::ValidatingPaths))));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, RunProgress::Phase(RunPhase::StartingVm))));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, RunProgress::Phase(RunPhase::PreparingVm))));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, RunProgress::Phase(RunPhase::RunningScripts))));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, RunProgress::Phase(RunPhase::CollectingOutput))));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, RunProgress::Phase(RunPhase::CleaningUp))));
+
+        // Verify script events
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, RunProgress::ScriptStarted { .. })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, RunProgress::ScriptFinished { .. })));
+    }
+
+    #[test]
+    fn run_task_with_ops_records_ssh_commands() {
+        let temp = create_test_scripts_dir();
+        let input_dir = temp.path().join("scripts");
+        let output_dir = temp.path().join("output");
+
+        let mock = MockVmOps::new()
+            .with_run_ok("test-vm")
+            .with_ssh_ok("")
+            .with_stream_outputs(vec!["output"]);
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _ = rt.block_on(run_task_with_ops(
+            &mock,
+            &input_dir,
+            &output_dir,
+            TaskRunOptions::default(),
+            None,
+        ));
+
+        let commands = mock.ssh_commands();
+
+        // Should have mkdir commands (from prepare_vm and collect_output)
+        assert!(commands.iter().any(|(_, cmd)| cmd.contains("mkdir")));
+
+        // ssh_stream commands are recorded separately
+        let stream_commands = mock.stream_commands.lock().unwrap().clone();
+        assert!(stream_commands
+            .iter()
+            .any(|cmd| cmd.contains("/bin/bash")));
+    }
+
+    #[test]
+    fn run_task_with_ops_handles_cleanup_failure() {
+        let temp = create_test_scripts_dir();
+        let input_dir = temp.path().join("scripts");
+        let output_dir = temp.path().join("output");
+
+        let mock = MockVmOps::new()
+            .with_run_ok("test-vm")
+            .with_ssh_ok("")
+            .with_stream_outputs(vec!["output"])
+            .with_rm_err("cleanup failed");
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(run_task_with_ops(
+            &mock,
+            &input_dir,
+            &output_dir,
+            TaskRunOptions::default(),
+            None,
+        ));
+
+        // Should fail with cleanup error
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::CleanupFailed { vm_id, message } => {
+                assert_eq!(vm_id, "test-vm");
+                assert!(message.contains("cleanup failed"));
+            }
+            err => panic!("Expected CleanupFailed error, got: {err}"),
+        }
     }
 }

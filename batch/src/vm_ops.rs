@@ -156,7 +156,7 @@ impl VmOps for RealVmOps {
 pub use mock::*;
 
 #[cfg(test)]
-mod mock {
+pub mod mock {
     use super::*;
     use std::collections::VecDeque;
 
