@@ -3,7 +3,7 @@ use anyhow::Result;
 use crate::config::Config;
 
 pub use crate::ops::{ProgressCallback, RunOptions};
-pub use crate::vm::VmRecord;
+pub use crate::vm::{VmRecord, VmStatus};
 
 pub(crate) mod cloud_init;
 pub(crate) mod config;
