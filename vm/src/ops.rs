@@ -7,7 +7,7 @@ use crate::progress::{sp_complete, sp_fail, sp_start, StepProgress};
 use crate::qemu::{QemuConfig, QemuRunner};
 use crate::ssh::SshClient;
 use crate::vm::{
-    keep_key_paths, list_vm_records, read_vm_record, remove_vm_instance,
+    acquire_vm_creation_lock, keep_key_paths, list_vm_records, read_vm_record, remove_vm_instance,
     reserve_specific_ssh_port, ssh_port_for_vm_index, ssh_port_locks_dir, stop_qemu_and_wait,
     validate_vm_capacity, write_vm_record, VmRecord, VmRuntimeStatus, VmStatus,
 };
@@ -494,7 +494,11 @@ async fn run_vm_inner(config: &Config, options: RunOptions) -> Result<VmRecord> 
     sp_complete(&mut sp, "ready");
     notify_progress(&on_progress, 4, 8, "SSH key pair — ready");
 
-    // Step 5: Validate capacity and allocate VM ID + SSH port
+    // Step 5: Validate capacity, allocate VM ID, reserve port, create directory
+    // All under a global lock to prevent race conditions during concurrent VM creation
+    let vm_creation_lock = acquire_vm_creation_lock(&instances_dir)
+        .context("Failed to acquire VM creation lock")?;
+
     // VM ID determines SSH port: vm0 -> 2220, vm1 -> 2221, ..., vm9 -> 2229
     let vm_index = validate_vm_capacity(&instances_dir)
         .context("Failed to validate VM capacity")?;
@@ -527,6 +531,10 @@ async fn run_vm_inner(config: &Config, options: RunOptions) -> Result<VmRecord> 
             );
         }
     }
+
+    // VM directory created successfully, release the global lock
+    // Port reservation will be released when _port_reservation drops
+    drop(vm_creation_lock);
 
     // Step 6: Cloud-init seed
     sp_start(&mut sp, "Cloud-init seed");

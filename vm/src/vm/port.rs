@@ -8,6 +8,99 @@ use std::path::{Path, PathBuf};
 /// Maximum number of VMs allowed
 pub const MAX_VMS: usize = 10;
 
+// ---------------------------------------------------------------------------
+// VM creation lock (prevents race conditions in concurrent VM creation)
+// ---------------------------------------------------------------------------
+
+/// Path to the VM creation lock directory
+pub fn vm_locks_dir(instances_dir: &Path) -> PathBuf {
+    instances_dir.join(".vm-locks")
+}
+
+/// Path to the global VM creation lock
+pub fn vm_creation_lock_path(instances_dir: &Path) -> PathBuf {
+    vm_locks_dir(instances_dir).join("creation.lock")
+}
+
+/// RAII guard for VM creation lock.
+/// The lock is released (file deleted) when this guard is dropped.
+#[derive(Debug)]
+pub struct VmCreationLock {
+    lock_path: PathBuf,
+}
+
+impl Drop for VmCreationLock {
+    fn drop(&mut self) {
+        if let Err(err) = std::fs::remove_file(&self.lock_path)
+            && err.kind() != ErrorKind::NotFound
+        {
+            eprintln!(
+                "Failed to remove VM creation lock {}: {err}",
+                self.lock_path.display()
+            );
+        }
+    }
+}
+
+/// Check if a VM lock file is stale (process that created it is no longer alive).
+fn is_stale_vm_lock(lock_path: &Path) -> bool {
+    let lock_pid = match std::fs::read_to_string(lock_path) {
+        Ok(content) => match content.trim().parse::<u32>() {
+            Ok(pid) => pid,
+            Err(_) => return true, // Invalid PID, consider stale
+        },
+        Err(err) => {
+            return err.kind() == ErrorKind::NotFound;
+        }
+    };
+
+    !is_process_alive(lock_pid)
+}
+
+/// Acquire global lock for VM creation.
+/// This ensures atomic VM ID allocation + port reservation + directory creation.
+///
+/// Returns a RAII guard that releases the lock when dropped.
+/// Returns an error if another VM creation is in progress.
+pub fn acquire_vm_creation_lock(instances_dir: &Path) -> Result<VmCreationLock> {
+    std::fs::create_dir_all(vm_locks_dir(instances_dir))?;
+
+    let lock_path = vm_creation_lock_path(instances_dir);
+
+    // Try atomic file creation
+    match OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lock_path)
+    {
+        Ok(mut file) => {
+            file.write_all(std::process::id().to_string().as_bytes())?;
+            file.flush()?;
+            Ok(VmCreationLock { lock_path })
+        }
+        Err(err) if err.kind() == ErrorKind::AlreadyExists => {
+            // Check for stale lock
+            if is_stale_vm_lock(&lock_path) {
+                // Remove stale lock and retry
+                std::fs::remove_file(&lock_path)
+                    .context("Failed to remove stale VM creation lock")?;
+
+                // Try again
+                let mut file = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&lock_path)?;
+                file.write_all(std::process::id().to_string().as_bytes())?;
+                file.flush()?;
+                Ok(VmCreationLock { lock_path })
+            } else {
+                bail!("Another VM creation is in progress. Please wait and retry.");
+            }
+        }
+        Err(err) => Err(err).context("Failed to acquire VM creation lock"),
+    }
+}
+
 /// Base SSH port for VMs (vm0 uses 2220, vm1 uses 2221, etc.)
 pub const SSH_PORT_BASE: u16 = 2220;
 
@@ -246,6 +339,89 @@ mod tests {
                 .checked_add(1)
                 .expect("failed to locate a free test port");
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // VM creation lock tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_acquire_vm_creation_lock_success() {
+        let instances_dir = temp_instances_dir();
+
+        let lock = acquire_vm_creation_lock(instances_dir.path());
+        assert!(lock.is_ok());
+
+        // Lock file should exist
+        let lock_path = vm_creation_lock_path(instances_dir.path());
+        assert!(lock_path.exists());
+
+        // Lock file should contain our PID
+        let content = std::fs::read_to_string(&lock_path).unwrap();
+        assert_eq!(content.trim().parse::<u32>().unwrap(), std::process::id());
+    }
+
+    #[test]
+    fn test_acquire_vm_creation_lock_releases_on_drop() {
+        let instances_dir = temp_instances_dir();
+        let lock_path = vm_creation_lock_path(instances_dir.path());
+
+        // Acquire and immediately drop
+        {
+            let _lock = acquire_vm_creation_lock(instances_dir.path()).unwrap();
+            assert!(lock_path.exists());
+        }
+
+        // Lock file should be removed after drop
+        assert!(!lock_path.exists());
+    }
+
+    #[test]
+    fn test_acquire_vm_creation_lock_blocks_concurrent() {
+        let instances_dir = temp_instances_dir();
+
+        // First lock succeeds
+        let _first = acquire_vm_creation_lock(instances_dir.path()).unwrap();
+
+        // Second lock attempt should fail
+        let second = acquire_vm_creation_lock(instances_dir.path());
+        assert!(second.is_err());
+        let err = second.unwrap_err().to_string();
+        assert!(err.contains("Another VM creation is in progress"));
+    }
+
+    #[test]
+    fn test_acquire_vm_creation_lock_reuses_stale_lock() {
+        let instances_dir = temp_instances_dir();
+        let lock_path = vm_creation_lock_path(instances_dir.path());
+
+        // Create a stale lock file with a non-existent PID
+        std::fs::create_dir_all(vm_locks_dir(instances_dir.path())).unwrap();
+        std::fs::write(&lock_path, "99999999").unwrap();
+
+        // Should succeed because the lock is stale
+        let lock = acquire_vm_creation_lock(instances_dir.path());
+        assert!(lock.is_ok());
+
+        // Lock file should now contain our PID
+        let content = std::fs::read_to_string(&lock_path).unwrap();
+        assert_eq!(content.trim().parse::<u32>().unwrap(), std::process::id());
+    }
+
+    #[test]
+    fn test_is_stale_vm_lock_with_dead_pid() {
+        let instances_dir = temp_instances_dir();
+        let lock_path = vm_creation_lock_path(instances_dir.path());
+
+        std::fs::create_dir_all(vm_locks_dir(instances_dir.path())).unwrap();
+
+        // Non-existent PID should be stale
+        std::fs::write(&lock_path, "99999999").unwrap();
+        assert!(is_stale_vm_lock(&lock_path));
+
+        // Current process PID should not be stale
+        std::fs::write(&lock_path, std::process::id().to_string()).unwrap();
+        assert!(!is_stale_vm_lock(&lock_path));
     }
 
     // -------------------------------------------------------------------------
