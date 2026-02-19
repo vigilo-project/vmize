@@ -2,7 +2,7 @@
 
 ## Project
 
-dashboard — VMize's axum-based web server for running `batch` tasks in parallel with real-time progress via Server-Sent Events.
+dashboard — VMize's axum-based web server for running `worker` tasks in parallel with real-time progress via Server-Sent Events.
 
 ## Commands
 
@@ -55,7 +55,7 @@ The combined stream is boxed (`Pin<Box<dyn Stream<...>>>`) to unify the two conc
 `POST /api/run` spawns one `std::thread` per queued task (NOT `tokio::task::spawn_blocking`, to avoid `BlockingInAsyncContext` from `run_task_blocking_with_progress`).
 
 Each worker thread:
-1. Loads task definition via `batch::load_task()`
+1. Loads task definition via `task::load_task()`
 2. Spawns a second thread to forward `mpsc::Receiver<RunProgress>` → `broadcast::Sender<String>`
 3. Calls `run_task_blocking_with_progress()` (creates its own tokio runtime)
 4. Joins the forwarder thread

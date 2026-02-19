@@ -3,10 +3,9 @@ use std::process;
 use std::thread;
 
 use clap::{Parser, Subcommand};
+use task::load_task;
 
-use batch::{
-    MAX_CONCURRENT_TASKS, TaskRunOptions, load_task, run_loaded_task_blocking,
-};
+use worker::{MAX_BATCH_TASKS, TaskRunOptions, run_loaded_task_blocking};
 
 /// VMize CLI — run VM tasks and manage the dashboard
 #[derive(Debug, Parser)]
@@ -20,9 +19,9 @@ struct Cli {
 enum Commands {
     /// Run one or more VM tasks described by a task directory
     Task {
-        /// Run all tasks concurrently (max 4)
+        /// Run all tasks in batch mode (max 4)
         #[arg(long)]
-        concurrent: bool,
+        batch: bool,
 
         /// Task directories containing task.json + input/
         #[arg(value_name = "TASK_DIR")]
@@ -41,14 +40,14 @@ fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Task { concurrent, tasks } => {
+        Commands::Task { batch, tasks } => {
             if tasks.is_empty() {
                 eprintln!("Usage: vmize task <task-dir> [task-dir ...]");
                 process::exit(1);
             }
 
-            if concurrent {
-                run_concurrent(&tasks);
+            if batch {
+                run_batch(&tasks);
             } else {
                 run_sequential(&tasks);
             }
@@ -92,10 +91,10 @@ fn run_sequential(tasks: &[PathBuf]) {
     }
 }
 
-fn run_concurrent(tasks: &[PathBuf]) {
-    if tasks.len() > MAX_CONCURRENT_TASKS {
+fn run_batch(tasks: &[PathBuf]) {
+    if tasks.len() > MAX_BATCH_TASKS {
         eprintln!(
-            "--concurrent supports up to {MAX_CONCURRENT_TASKS} tasks, but {} were provided",
+            "--batch supports up to {MAX_BATCH_TASKS} tasks, but {} were provided",
             tasks.len()
         );
         process::exit(1);
@@ -146,6 +145,6 @@ fn run_concurrent(tasks: &[PathBuf]) {
     }
 }
 
-fn format_task_error(task_name: &str, err: batch::Error) -> String {
+fn format_task_error(task_name: &str, err: worker::Error) -> String {
     format!("Failed to execute {task_name}: {err}")
 }

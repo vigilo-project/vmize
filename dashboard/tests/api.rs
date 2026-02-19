@@ -17,9 +17,9 @@ use tokio::task::JoinHandle;
 
 fn example_task_dir() -> String {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../batch/example/task1")
+        .join("../worker/example/task1")
         .canonicalize()
-        .expect("batch/example/task1 must exist")
+        .expect("worker/example/task1 must exist")
         .to_string_lossy()
         .into_owned()
 }

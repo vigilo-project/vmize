@@ -3,10 +3,10 @@ const { test, expect } = require("@playwright/test");
 
 const repoRoot = path.resolve(__dirname, "..", "..");
 const taskDirs = [
-  path.join(repoRoot, "batch", "example", "split-task1"),
-  path.join(repoRoot, "batch", "example", "split-task2"),
-  path.join(repoRoot, "batch", "example", "split-task3"),
-  path.join(repoRoot, "batch", "example", "split-task4")
+  path.join(repoRoot, "worker", "example", "split-task1"),
+  path.join(repoRoot, "worker", "example", "split-task2"),
+  path.join(repoRoot, "worker", "example", "split-task3"),
+  path.join(repoRoot, "worker", "example", "split-task4")
 ];
 
 async function addTask(page, request, taskDir, expectedCount) {

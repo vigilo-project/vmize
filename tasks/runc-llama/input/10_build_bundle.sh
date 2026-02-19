@@ -2,11 +2,11 @@
 set -euo pipefail
 
 CONTAINER_NAME="llama-basic"
-BUNDLE_DIR="/tmp/batch/work/bundle"
+BUNDLE_DIR="/tmp/vmize-worker/work/bundle"
 ARTIFACT_DIR="${BUNDLE_DIR}/artifacts"
 MODELS_DIR="${BUNDLE_DIR}/models"
 ROOTFS_DIR="${BUNDLE_DIR}/rootfs"
-INPUT_MODELS_DIR="/tmp/batch/work/models"
+INPUT_MODELS_DIR="/tmp/vmize-worker/work/models"
 
 case "$(uname -m)" in
     aarch64)
@@ -237,5 +237,5 @@ echo "    config: ${BUNDLE_DIR}/config.json"
 echo "    rootfs: ${ROOTFS_DIR}"
 echo "    model:  ${MODEL_PATH}"
 
-cp "${ARTIFACT_DIR}/bundle.env" /tmp/batch/out/bundle.env
-cp "${BUNDLE_DIR}/config.json" /tmp/batch/out/config.json
+cp "${ARTIFACT_DIR}/bundle.env" /tmp/vmize-worker/out/bundle.env
+cp "${BUNDLE_DIR}/config.json" /tmp/vmize-worker/out/config.json

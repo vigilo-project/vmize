@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BUNDLE_DIR="/tmp/batch/work/bundle"
+BUNDLE_DIR="/tmp/vmize-worker/work/bundle"
 ARTIFACT_DIR="${BUNDLE_DIR}/artifacts"
 BUNDLE_ENV="${ARTIFACT_DIR}/bundle.env"
 ROOTFS_DIR="${BUNDLE_DIR}/rootfs"
@@ -44,7 +44,7 @@ if [[ ! -x "${ROOTFS_DIR}/opt/llama.cpp/build/bin/llama-cli" ]]; then
     exit 1
 fi
 
-if [[ ! -s "/tmp/batch/out/llama-answer.txt" ]]; then
+if [[ ! -s "/tmp/vmize-worker/out/llama-answer.txt" ]]; then
     echo "[ERROR] llama-answer.txt missing or empty"
     exit 1
 fi
@@ -143,17 +143,17 @@ if [[ ! -s "${REPLAY_TAR}" ]]; then
     exit 1
 fi
 
-cp "${REPLAY_TAR}" /tmp/batch/out/runc-llama-replay.tar.xz
+cp "${REPLAY_TAR}" /tmp/vmize-worker/out/runc-llama-replay.tar.xz
 
 {
     echo "[+] runc llama replay bundle generated"
-    echo "    replay tar: /tmp/batch/out/runc-llama-replay.tar.xz"
+    echo "    replay tar: /tmp/vmize-worker/out/runc-llama-replay.tar.xz"
     echo "    model file: ${MODEL_FILE}"
-    echo "    prompt test output: /tmp/batch/out/llama-answer.txt"
+    echo "    prompt test output: /tmp/vmize-worker/out/llama-answer.txt"
     echo ""
     echo "To replay later (from extracted output):"
     echo "  tar -xJf runc-llama-replay.tar.xz"
     echo "  ./run-from-output.sh"
-} > /tmp/batch/out/bundle-manifest.txt
+} > /tmp/vmize-worker/out/bundle-manifest.txt
 
 echo "[+] Verification complete"

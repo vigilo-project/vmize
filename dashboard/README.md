@@ -1,6 +1,6 @@
 # dashboard
 
-`dashboard` is VMize's web control plane for [`batch`](../batch).
+`dashboard` is VMize's web control plane for [`worker`](../worker).
 It provides queueing, live progress, and operational visibility for task runs.
 `dashboard` is a library crate and is launched through `vmize dashboard`.
 

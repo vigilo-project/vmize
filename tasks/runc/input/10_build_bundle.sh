@@ -2,7 +2,7 @@
 set -euo pipefail
 
 CONTAINER_NAME="basic"
-BUNDLE_DIR="/tmp/batch/work/bundle"
+BUNDLE_DIR="/tmp/vmize-worker/work/bundle"
 
 case "$(uname -m)" in
     aarch64)
@@ -96,5 +96,5 @@ echo "    Artifact: ${ARTIFACT_DIR}/config.json"
 echo "    Artifact: ${ARTIFACT_DIR}/rootfs.tar.xz"
 
 # Copy artifacts to batch output directory
-cp "${ARTIFACT_DIR}/config.json" /tmp/batch/out/config.json
-cp "${ARTIFACT_DIR}/rootfs.tar.xz" /tmp/batch/out/rootfs.tar.xz
+cp "${ARTIFACT_DIR}/config.json" /tmp/vmize-worker/out/config.json
+cp "${ARTIFACT_DIR}/rootfs.tar.xz" /tmp/vmize-worker/out/rootfs.tar.xz

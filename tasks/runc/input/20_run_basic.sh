@@ -2,7 +2,7 @@
 set -euo pipefail
 
 CONTAINER_NAME="basic"
-BUNDLE_DIR="/tmp/batch/work/bundle"
+BUNDLE_DIR="/tmp/vmize-worker/work/bundle"
 
 command -v runc >/dev/null 2>&1 || { echo "[ERROR] runc not found"; exit 1; }
 
@@ -37,4 +37,4 @@ else
 fi
 
 # Capture runc list output for batch
-sudo runc list > /tmp/batch/out/runc-list.txt
+sudo runc list > /tmp/vmize-worker/out/runc-list.txt

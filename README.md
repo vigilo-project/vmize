@@ -12,14 +12,18 @@ VMize batches, isolates, and executes workloads inside ephemeral virtual machine
 
 VM lifecycle runtime: create, connect, copy files, list, and remove Ubuntu cloud-image VMs on QEMU.
 
-### [`batch`](./batch)
+### [`task`](./task)
+
+Task definition crate for parsing `task.json` and validating task directories.
+
+### [`worker`](./worker)
 
 Task runner on top of `vm`.
 A **task** is a directory with `task.json`, `input/`, and `output/`.
 
 ### [`dashboard`](./dashboard)
 
-Web control plane for queuing and running `batch` tasks with live progress.
+Web control plane for queuing and running `worker` tasks with live progress.
 
 ### [`cli` (`vmize`)](./cli)
 
@@ -31,12 +35,12 @@ Shared task directories (for example `runc`, `runc-llama`, `ollama`).
 
 ## Dependency Chain
 
-`vmize -> (dashboard | batch) -> vm -> QEMU/KVM (Linux) or HVF (macOS)`
+`vmize -> (dashboard | worker) -> vm -> QEMU/KVM (Linux) or HVF (macOS)`
 
 ## Minimum Goals At A Glance
 
 - `vm`: run a VM, execute commands with `ssh`, transfer files with `cp`, and clean up with `rm`.
-- `batch`: run task directories in isolated VMs, collect outputs, and enforce the `--concurrent` max queue size.
+- `worker`: run task directories in isolated VMs, collect outputs, and enforce the `--batch` max queue size.
 - `dashboard`: queue tasks, run queued tasks in parallel, stream live state/log updates, and preserve state on reconnect.
 
 ## Quick Start: vm
@@ -47,11 +51,11 @@ cargo build --release
 ./target/release/vm run
 ```
 
-## Quick Start: batch
+## Quick Start: worker
 
 ```bash
 cargo build --release
-./target/release/vmize task batch/example/task1
+./target/release/vmize task worker/example/task1
 ./target/release/vmize task tasks/runc-llama
 ```
 
@@ -67,12 +71,13 @@ cargo build --release
 ```bash
 # Module gates
 cargo test -p vm
-cargo test -p batch
+cargo test -p task
+cargo test -p worker
 cargo test -p dashboard
 
 # Optional extended paths
 DASHBOARD_IT=1 cargo test --test api run_api_run_task_succeeds -p dashboard -- --nocapture
-BATCH_OLLAMA_IT=1 cargo test run_task_ollama_prompt_collects_answer --test integration -p batch -- --nocapture
+BATCH_OLLAMA_IT=1 cargo test run_task_ollama_prompt_collects_answer --test integration -p worker -- --nocapture
 
 # Optional browser E2E (separate from `cargo test`)
 (cd dashboard && npm install && npx playwright install chromium && npm run e2e)
@@ -87,7 +92,8 @@ cargo test
 vmize/
 ├── Cargo.toml
 ├── vm/
-├── batch/
+├── task/
+├── worker/
 ├── dashboard/
 ├── cli/
 └── tasks/

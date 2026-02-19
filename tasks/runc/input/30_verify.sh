@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ARTIFACT_DIR="/tmp/batch/work/bundle/artifacts"
+ARTIFACT_DIR="/tmp/vmize-worker/work/bundle/artifacts"
 
 command -v jq >/dev/null 2>&1 || { echo "[ERROR] jq not found"; exit 1; }
 command -v tar >/dev/null 2>&1 || { echo "[ERROR] tar not found"; exit 1; }
@@ -39,4 +39,4 @@ echo "    ${ROOTFS_TAR}"
     echo "[+] Bundle verification passed"
     echo "    config.json: OK"
     echo "    rootfs.tar.xz: OK"
-} > /tmp/batch/out/verify.log
+} > /tmp/vmize-worker/out/verify.log

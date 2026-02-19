@@ -132,19 +132,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
-name = "batch"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
- "vm",
-]
-
-[[package]]
 name = "bitflags"
 version = "2.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -268,12 +255,13 @@ name = "dashboard"
 version = "0.1.0"
 dependencies = [
  "axum",
- "batch",
  "futures",
  "reqwest",
  "serde",
  "serde_json",
+ "task",
  "tokio",
+ "worker",
 ]
 
 [[package]]
@@ -1538,6 +1526,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "task"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "tempfile"
 version = "3.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1919,10 +1916,11 @@ dependencies = [
 name = "vmize"
 version = "0.1.0"
 dependencies = [
- "batch",
  "clap",
  "dashboard",
+ "task",
  "tokio",
+ "worker",
 ]
 
 [[package]]
@@ -2370,6 +2368,20 @@ dependencies = [
  "serde_json",
  "unicode-xid",
  "wasmparser",
+]
+
+[[package]]
+name = "worker"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "task",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "vm",
 ]
 
 [[package]]

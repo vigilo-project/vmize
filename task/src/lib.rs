@@ -1,0 +1,231 @@
+use std::path::{Path, PathBuf};
+
+use serde::Deserialize;
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TaskDefinition {
+    pub name: Option<String>,
+    pub description: Option<String>,
+    #[serde(default)]
+    pub disk_size: Option<String>,
+    #[serde(default)]
+    pub commands: Vec<String>,
+    #[serde(default)]
+    pub artifacts: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LoadedTask {
+    pub definition: TaskDefinition,
+    pub input_dir: PathBuf,  // task_dir/input/
+    pub output_dir: PathBuf, // task_dir/output/
+    pub logs_dir: PathBuf,   // task_dir/output/logs/
+}
+
+pub fn load_task(task_dir: &Path) -> Result<LoadedTask, String> {
+    let json_path = task_dir.join("task.json");
+    let contents = std::fs::read_to_string(&json_path)
+        .map_err(|err| format!("Cannot read {}: {err}", json_path.display()))?;
+    let definition: TaskDefinition = serde_json::from_str(&contents)
+        .map_err(|err| format!("Invalid JSON in {}: {err}", json_path.display()))?;
+
+    let input_dir = task_dir.join("input");
+    if !input_dir.exists() {
+        return Err(format!(
+            "Input directory not found: {}",
+            input_dir.display()
+        ));
+    }
+    if !input_dir.is_dir() {
+        return Err(format!(
+            "Input path is not a directory: {}",
+            input_dir.display()
+        ));
+    }
+
+    for cmd in &definition.commands {
+        let cmd_path = input_dir.join(cmd);
+        if !cmd_path.exists() {
+            return Err(format!(
+                "Command '{cmd}' not found in input: {}",
+                cmd_path.display()
+            ));
+        }
+    }
+
+    let output_dir = task_dir.join("output");
+    let logs_dir = output_dir.join("logs");
+    std::fs::create_dir_all(&logs_dir)
+        .map_err(|err| format!("Cannot create logs dir {}: {err}", logs_dir.display()))?;
+
+    Ok(LoadedTask {
+        definition,
+        input_dir,
+        output_dir,
+        logs_dir,
+    })
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Unit Tests
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn create_task_dir(json_content: &str) -> TempDir {
+        let temp = TempDir::new().expect("failed to create temp dir");
+        let json_path = temp.path().join("task.json");
+        fs::write(&json_path, json_content).expect("failed to write task.json");
+        temp
+    }
+
+    fn create_task_dir_with_input(json_content: &str, commands: &[&str]) -> TempDir {
+        let temp = create_task_dir(json_content);
+        let input_dir = temp.path().join("input");
+        fs::create_dir(&input_dir).unwrap();
+        for cmd in commands {
+            fs::write(input_dir.join(cmd), "#!/bin/bash").unwrap();
+        }
+        temp
+    }
+
+    #[test]
+    fn load_task_parses_valid_json_with_all_fields() {
+        let temp = create_task_dir_with_input(
+            r#"{"name": "test-task", "description": "A test", "disk_size": "10G", "commands": ["00_first.sh", "10_second.sh"]}"#,
+            &["00_first.sh", "10_second.sh"],
+        );
+
+        let result = load_task(temp.path()).unwrap();
+
+        assert_eq!(result.definition.name, Some("test-task".to_string()));
+        assert_eq!(result.definition.description, Some("A test".to_string()));
+        assert_eq!(result.definition.disk_size, Some("10G".to_string()));
+        assert_eq!(
+            result.definition.commands,
+            vec!["00_first.sh", "10_second.sh"]
+        );
+        assert_eq!(result.input_dir, temp.path().join("input"));
+        assert_eq!(result.output_dir, temp.path().join("output"));
+        assert_eq!(result.logs_dir, temp.path().join("output").join("logs"));
+    }
+
+    #[test]
+    fn load_task_parses_json_with_no_commands() {
+        let temp = create_task_dir_with_input(r#"{"name": "minimal"}"#, &[]);
+
+        let result = load_task(temp.path()).unwrap();
+
+        assert_eq!(result.definition.name, Some("minimal".to_string()));
+        assert!(result.definition.commands.is_empty());
+        assert!(result.definition.artifacts.is_none());
+    }
+
+    #[test]
+    fn load_task_parses_artifacts_field() {
+        let temp = create_task_dir_with_input(
+            r#"{"commands": [], "artifacts": ["out.txt", "result.tar"]}"#,
+            &[],
+        );
+
+        let result = load_task(temp.path()).unwrap();
+
+        assert_eq!(
+            result.definition.artifacts,
+            Some(vec!["out.txt".to_string(), "result.tar".to_string()])
+        );
+    }
+
+    #[test]
+    fn load_task_fails_for_missing_file() {
+        let temp = TempDir::new().expect("failed to create temp dir");
+
+        let result = load_task(temp.path());
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("Cannot read"));
+        assert!(err.contains("task.json"));
+    }
+
+    #[test]
+    fn load_task_fails_for_invalid_json() {
+        let temp = create_task_dir(r#"not valid json"#);
+
+        let result = load_task(temp.path());
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("Invalid JSON"));
+    }
+
+    #[test]
+    fn load_task_fails_if_input_dir_missing() {
+        let temp = create_task_dir(r#"{"name": "test", "commands": ["00_run.sh"]}"#);
+
+        let result = load_task(temp.path());
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("Input directory not found"));
+    }
+
+    #[test]
+    fn load_task_fails_if_command_file_missing() {
+        let temp = create_task_dir_with_input(
+            r#"{"name": "test", "commands": ["00_run.sh", "10_missing.sh"]}"#,
+            &["00_run.sh"],
+        );
+
+        let result = load_task(temp.path());
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("10_missing.sh"));
+    }
+
+    #[test]
+    fn load_task_creates_output_and_logs_directories() {
+        let temp = create_task_dir_with_input(r#"{"name": "test"}"#, &[]);
+        let output_dir = temp.path().join("output");
+        let logs_dir = output_dir.join("logs");
+
+        assert!(!output_dir.exists());
+
+        let result = load_task(temp.path());
+
+        assert!(result.is_ok());
+        assert!(output_dir.is_dir());
+        assert!(logs_dir.is_dir());
+    }
+
+    #[test]
+    fn load_task_output_directory_already_exists() {
+        let temp = create_task_dir_with_input(r#"{"name": "test"}"#, &[]);
+        let output_dir = temp.path().join("output");
+        fs::create_dir_all(output_dir.join("logs")).unwrap();
+        fs::write(output_dir.join("existing.txt"), "data").unwrap();
+
+        let result = load_task(temp.path());
+
+        assert!(result.is_ok());
+        assert!(output_dir.join("existing.txt").exists());
+    }
+
+    #[test]
+    fn load_task_handles_unicode_in_name() {
+        let temp = create_task_dir_with_input(
+            r#"{"name": "테스트-タスク-🔥", "description": "한글 설명"}"#,
+            &[],
+        );
+
+        let result = load_task(temp.path()).unwrap();
+
+        assert_eq!(result.definition.name, Some("테스트-タスク-🔥".to_string()));
+        assert_eq!(result.definition.description, Some("한글 설명".to_string()));
+    }
+}

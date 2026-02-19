@@ -1,0 +1,6 @@
+{
+  "name": "example-worker",
+  "description": "Example task for testing",
+  "disk_size": "20G",
+  "commands": ["00_print.sh", "10_result.sh"]
+}

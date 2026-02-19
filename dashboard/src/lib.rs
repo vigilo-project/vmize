@@ -17,11 +17,11 @@ use axum::{
 };
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
+use task::load_task;
 use tokio::sync::broadcast;
 
-use batch::{
-    MAX_CONCURRENT_TASKS, RunPhase, RunProgress, TaskRunOptions, load_task,
-    run_loaded_task_blocking_with_progress,
+use worker::{
+    MAX_BATCH_TASKS, RunPhase, RunProgress, TaskRunOptions, run_loaded_task_blocking_with_progress,
 };
 
 const SSE_REPLAY_CAPACITY: usize = 100;
@@ -197,12 +197,10 @@ async fn add_task(State(app): State<AppState>, Json(req): Json<AddTaskRequest>) 
             .into_response();
     }
 
-    if s.tasks.len() >= MAX_CONCURRENT_TASKS {
+    if s.tasks.len() >= MAX_BATCH_TASKS {
         return (
             StatusCode::BAD_REQUEST,
-            Json(
-                serde_json::json!({"error": format!("queue is full (max {MAX_CONCURRENT_TASKS})")}),
-            ),
+            Json(serde_json::json!({"error": format!("queue is full (max {MAX_BATCH_TASKS})")})),
         )
             .into_response();
     }
