@@ -1,7 +1,10 @@
 use anyhow::{bail, Context, Result};
 use std::collections::hash_map::DefaultHasher;
+use std::fs::OpenOptions;
 use std::hash::{Hash, Hasher};
+use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use tracing::debug;
 
 /// SSH key pair manager
@@ -29,6 +32,21 @@ impl SshKeyManager {
         // Skip generation if key already exists
         if private_key_path.exists() {
             debug!("SSH key already exists at: {}", private_key_path.display());
+            let public_key = self.read_public_key(&private_key_path)?;
+            return Ok((private_key_path, public_key));
+        }
+
+        // Acquire lock to prevent race condition when multiple threads try to generate
+        // the same key simultaneously
+        let lock_path = self.base_dir.join(format!("{}.lock", key_name));
+        let _lock = acquire_file_lock(&lock_path)?;
+
+        // Double-check after acquiring lock - another thread may have created it
+        if private_key_path.exists() {
+            debug!(
+                "SSH key created by another thread at: {}",
+                private_key_path.display()
+            );
             let public_key = self.read_public_key(&private_key_path)?;
             return Ok((private_key_path, public_key));
         }
@@ -70,6 +88,63 @@ impl SshKeyManager {
             std::fs::read_to_string(&public_key_path).context("Failed to read public key file")?;
 
         Ok(public_key.trim().to_string())
+    }
+}
+
+/// Acquire a file-based lock for synchronization.
+/// Returns a guard that releases the lock when dropped.
+fn acquire_file_lock(lock_path: &Path) -> Result<LockGuard> {
+    // Ensure parent directory exists
+    if let Some(parent) = lock_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create lock directory {}", parent.display()))?;
+    }
+
+    let max_attempts = 100; // 5 seconds max
+    for _ in 0..max_attempts {
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(lock_path)
+        {
+            Ok(mut file) => {
+                // Write our PID for debugging
+                let _ = file.write_all(std::process::id().to_string().as_bytes());
+                let _ = file.flush();
+                return Ok(LockGuard {
+                    path: lock_path.to_path_buf(),
+                });
+            }
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+                // Another process holds the lock, wait and retry
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => {
+                return Err(e).context(format!(
+                    "Failed to acquire lock file {}",
+                    lock_path.display()
+                ));
+            }
+        }
+    }
+
+    bail!(
+        "Timeout waiting for lock file {}",
+        lock_path.display()
+    )
+}
+
+/// Guard that releases the file lock when dropped
+struct LockGuard {
+    path: PathBuf,
+}
+
+impl Drop for LockGuard {
+    fn drop(&mut self) {
+        if let Err(err) = std::fs::remove_file(&self.path)
+            && err.kind() != ErrorKind::NotFound {
+                eprintln!("Failed to remove lock file {}: {}", self.path.display(), err);
+            }
     }
 }
 

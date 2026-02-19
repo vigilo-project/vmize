@@ -234,17 +234,15 @@ impl QemuConfig {
             bail!("Cloud-init ISO is required");
         }
 
-        if let Some(disk) = &self.disk_image {
-            if !disk.exists() {
+        if let Some(disk) = &self.disk_image
+            && !disk.exists() {
                 bail!("Disk image does not exist: {}", disk.display());
             }
-        }
 
-        if let Some(iso) = &self.cloud_init_iso {
-            if !iso.exists() {
+        if let Some(iso) = &self.cloud_init_iso
+            && !iso.exists() {
                 bail!("Cloud-init ISO does not exist: {}", iso.display());
             }
-        }
 
         Ok(())
     }

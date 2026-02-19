@@ -1,43 +1,50 @@
 use crate::process::is_process_alive;
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use std::fs::OpenOptions;
 use std::io::{ErrorKind, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug)]
-pub struct SshPortReservation {
-    port: u16,
-    lock_path: PathBuf,
-}
+/// Maximum number of VMs allowed
+pub const MAX_VMS: usize = 10;
 
-impl SshPortReservation {
-    pub fn port(&self) -> u16 {
-        self.port
+/// Base SSH port for VMs (vm0 uses 2220, vm1 uses 2221, etc.)
+pub const SSH_PORT_BASE: u16 = 2220;
+
+/// Calculate SSH port for a VM index.
+/// Returns None if index >= MAX_VMS.
+pub fn ssh_port_for_vm_index(index: u32) -> Option<u16> {
+    if (index as usize) < MAX_VMS {
+        Some(SSH_PORT_BASE + index as u16)
+    } else {
+        None
     }
 }
 
-impl Drop for SshPortReservation {
-    fn drop(&mut self) {
-        if let Err(err) = std::fs::remove_file(&self.lock_path) {
-            if err.kind() != ErrorKind::NotFound {
-                eprintln!(
-                    "Failed to remove SSH port lock {}: {err}",
-                    self.lock_path.display()
-                );
-            }
-        }
+/// Validate that the system can create a new VM.
+/// Returns the next VM index if capacity is available.
+/// Returns an error if the maximum VM limit is reached.
+pub fn validate_vm_capacity(instances_dir: &Path) -> Result<u32> {
+    let next_id = crate::vm::next_vm_id(instances_dir)?;
+    let index = crate::vm::vm_index_from_id(&next_id)
+        .context("Failed to parse VM ID for capacity check")?;
+
+    if (index as usize) >= MAX_VMS {
+        bail!(
+            "Maximum VM limit ({}) reached. Current VMs use ports {}-{}. \
+             Remove an existing VM with 'vm rm <id>' before creating a new one.",
+            MAX_VMS,
+            SSH_PORT_BASE,
+            SSH_PORT_BASE + MAX_VMS as u16 - 1
+        );
     }
+
+    Ok(index)
 }
 
-pub fn ssh_port_locks_dir(instances_dir: &Path) -> PathBuf {
-    instances_dir.join(".ssh-port-locks")
-}
-
-pub fn ssh_port_lock_path(instances_dir: &Path, port: u16) -> PathBuf {
-    ssh_port_locks_dir(instances_dir).join(format!("{}.lock", port))
-}
-
+/// Check if a port is free (not bound by any process).
+/// Used only in tests, kept for backward compatibility.
+#[allow(dead_code)]
 pub fn is_port_free(port: u16) -> bool {
     for bind_addr in [
         ("0.0.0.0", port),
@@ -65,6 +72,44 @@ pub fn is_port_free(port: u16) -> bool {
     true
 }
 
+// ---------------------------------------------------------------------------
+// Legacy port reservation (kept for backward compatibility and tests)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+#[allow(dead_code)]
+pub struct SshPortReservation {
+    port: u16,
+    lock_path: PathBuf,
+}
+
+#[allow(dead_code)]
+impl SshPortReservation {
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+}
+
+impl Drop for SshPortReservation {
+    fn drop(&mut self) {
+        if let Err(err) = std::fs::remove_file(&self.lock_path)
+            && err.kind() != ErrorKind::NotFound {
+                eprintln!(
+                    "Failed to remove SSH port lock {}: {err}",
+                    self.lock_path.display()
+                );
+            }
+    }
+}
+
+pub fn ssh_port_locks_dir(instances_dir: &Path) -> PathBuf {
+    instances_dir.join(".ssh-port-locks")
+}
+
+pub fn ssh_port_lock_path(instances_dir: &Path, port: u16) -> PathBuf {
+    ssh_port_locks_dir(instances_dir).join(format!("{}.lock", port))
+}
+
 fn is_stale_ssh_lock(lock_path: &Path) -> bool {
     let lock_pid = match std::fs::read_to_string(lock_path) {
         Ok(content) => match content.trim().parse::<u32>() {
@@ -82,6 +127,52 @@ fn is_stale_ssh_lock(lock_path: &Path) -> bool {
     !is_process_alive(lock_pid)
 }
 
+/// Reserve a specific SSH port with a file lock.
+/// This is used for fixed port allocation where the port is predetermined.
+/// Returns an error if the port is already reserved by another active process.
+pub fn reserve_specific_ssh_port(instances_dir: &Path, port: u16) -> Result<SshPortReservation> {
+    std::fs::create_dir_all(ssh_port_locks_dir(instances_dir))?;
+
+    let lock_path = ssh_port_lock_path(instances_dir, port);
+
+    // Clean up stale lock if exists
+    if lock_path.exists() && is_stale_ssh_lock(&lock_path) {
+        let _ = std::fs::remove_file(&lock_path);
+    }
+
+    // Try to create lock file (atomic operation)
+    match OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lock_path)
+    {
+        Ok(mut lock_file) => {
+            // Write our PID and return
+            lock_file.write_all(std::process::id().to_string().as_bytes())?;
+            lock_file.flush()?;
+            Ok(SshPortReservation { port, lock_path })
+        }
+        Err(err) if err.kind() == ErrorKind::AlreadyExists => {
+            // Lock file exists and is active - another VM is using this port
+            bail!(
+                "SSH port {} is already reserved by another VM. \
+                 Use 'vm ps' to see running VMs or 'vm rm <id>' to remove a VM.",
+                port
+            );
+        }
+        Err(err) => {
+            Err(err).context(format!(
+                "Failed to reserve SSH port {} with lock {}",
+                port,
+                lock_path.display()
+            ))
+        }
+    }
+}
+
+/// Reserve an SSH port starting from a preferred port.
+/// This is the legacy dynamic allocation function, kept for tests and backward compatibility.
+#[allow(dead_code)]
 pub fn reserve_ssh_port(instances_dir: &Path, preferred_port: u16) -> Result<SshPortReservation> {
     std::fs::create_dir_all(ssh_port_locks_dir(instances_dir))?;
 
@@ -156,6 +247,106 @@ mod tests {
                 .expect("failed to locate a free test port");
         }
     }
+
+    // -------------------------------------------------------------------------
+    // Fixed port allocation tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_ssh_port_for_vm_index_valid() {
+        assert_eq!(ssh_port_for_vm_index(0), Some(2220));
+        assert_eq!(ssh_port_for_vm_index(1), Some(2221));
+        assert_eq!(ssh_port_for_vm_index(5), Some(2225));
+        assert_eq!(ssh_port_for_vm_index(9), Some(2229));
+    }
+
+    #[test]
+    fn test_ssh_port_for_vm_index_exceeds_limit() {
+        assert_eq!(ssh_port_for_vm_index(10), None);
+        assert_eq!(ssh_port_for_vm_index(11), None);
+        assert_eq!(ssh_port_for_vm_index(100), None);
+    }
+
+    #[test]
+    fn test_validate_vm_capacity_empty_dir() {
+        let instances_dir = temp_instances_dir();
+        let index = validate_vm_capacity(instances_dir.path()).unwrap();
+        assert_eq!(index, 0);
+    }
+
+    #[test]
+    fn test_validate_vm_capacity_with_existing_vms() {
+        let instances_dir = temp_instances_dir();
+        let base = instances_dir.path();
+
+        // Create vm0, vm1, vm2 directories
+        std::fs::create_dir_all(base.join("vm0")).unwrap();
+        std::fs::create_dir_all(base.join("vm1")).unwrap();
+        std::fs::create_dir_all(base.join("vm2")).unwrap();
+
+        let index = validate_vm_capacity(base).unwrap();
+        assert_eq!(index, 3); // Next should be vm3
+    }
+
+    #[test]
+    fn test_validate_vm_capacity_at_limit() {
+        let instances_dir = temp_instances_dir();
+        let base = instances_dir.path();
+
+        // Create vm0 through vm9 (10 VMs)
+        for i in 0..10 {
+            std::fs::create_dir_all(base.join(format!("vm{}", i))).unwrap();
+        }
+
+        let result = validate_vm_capacity(base);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Maximum VM limit (10) reached"));
+    }
+
+    #[test]
+    fn test_reserve_specific_ssh_port_success() {
+        let instances_dir = temp_instances_dir();
+        let port = find_free_port_hint();
+
+        let reservation = reserve_specific_ssh_port(instances_dir.path(), port);
+        assert!(reservation.is_ok());
+        assert_eq!(reservation.unwrap().port(), port);
+    }
+
+    #[test]
+    fn test_reserve_specific_ssh_port_already_reserved() {
+        let instances_dir = temp_instances_dir();
+        let port = find_free_port_hint();
+
+        // First reservation should succeed
+        let _first = reserve_specific_ssh_port(instances_dir.path(), port).unwrap();
+
+        // Second reservation of the same port should fail
+        let second = reserve_specific_ssh_port(instances_dir.path(), port);
+        assert!(second.is_err());
+        let err = second.unwrap_err().to_string();
+        assert!(err.contains("already reserved"));
+    }
+
+    #[test]
+    fn test_reserve_specific_ssh_port_reuses_stale_lock() {
+        let instances_dir = temp_instances_dir();
+        let port = find_free_port_hint();
+
+        // Create a stale lock file with a non-existent PID
+        std::fs::create_dir_all(ssh_port_locks_dir(instances_dir.path())).unwrap();
+        let lock_path = ssh_port_lock_path(instances_dir.path(), port);
+        std::fs::write(&lock_path, "99999999").unwrap();
+
+        // Should succeed because the lock is stale
+        let reservation = reserve_specific_ssh_port(instances_dir.path(), port);
+        assert!(reservation.is_ok());
+    }
+
+    // -------------------------------------------------------------------------
+    // Legacy dynamic allocation tests
+    // -------------------------------------------------------------------------
 
     #[test]
     fn test_reserve_ssh_port_prefers_preferred_free_port() {

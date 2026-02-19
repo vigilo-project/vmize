@@ -7,9 +7,9 @@ use crate::progress::{sp_complete, sp_fail, sp_start, StepProgress};
 use crate::qemu::{QemuConfig, QemuRunner};
 use crate::ssh::SshClient;
 use crate::vm::{
-    keep_key_paths, list_vm_records, next_vm_id, read_vm_record, remove_vm_instance,
-    reserve_ssh_port, ssh_port_locks_dir, stop_qemu_and_wait, write_vm_record, VmRecord,
-    VmRuntimeStatus, VmStatus,
+    keep_key_paths, list_vm_records, read_vm_record, remove_vm_instance,
+    reserve_specific_ssh_port, ssh_port_for_vm_index, ssh_port_locks_dir, stop_qemu_and_wait,
+    validate_vm_capacity, write_vm_record, VmRecord, VmRuntimeStatus, VmStatus,
 };
 use anyhow::{bail, Context, Result};
 use std::io::ErrorKind;
@@ -407,7 +407,9 @@ async fn verify_ssh_connection(
 
 async fn run_vm_inner(config: &Config, options: RunOptions) -> Result<VmRecord> {
     let username = options.username.unwrap_or_else(|| "ubuntu".to_string());
-    let ssh_port = options.ssh_port.unwrap_or(2222);
+    // Note: options.ssh_port is ignored - SSH port is now fixed based on VM ID
+    // (vm0 -> 2220, vm1 -> 2221, etc.)
+    let _ssh_port = options.ssh_port.unwrap_or(2222);
     let memory = options.memory.unwrap_or_else(|| "4G".to_string());
     let cpus = options.cpus.unwrap_or(2);
     let disk_size = options.disk_size;
@@ -492,168 +494,124 @@ async fn run_vm_inner(config: &Config, options: RunOptions) -> Result<VmRecord> 
     sp_complete(&mut sp, "ready");
     notify_progress(&on_progress, 4, 8, "SSH key pair — ready");
 
-    // Steps 5-7 happen inside the port-retry loop
-    let requested_ssh_port = ssh_port;
-    let mut port_reservation = reserve_ssh_port(&instances_dir, requested_ssh_port)
-        .context("Failed to reserve an SSH port for this VM")?;
-    let mut selected_ssh_port = port_reservation.port();
-    let mut port_attempts = 0u8;
-    let vm_record = loop {
-        let vm_id = next_vm_id(&instances_dir).context("Failed to generate VM id")?;
-        let vm_dir = instances_dir.join(&vm_id);
+    // Step 5: Validate capacity and allocate VM ID + SSH port
+    // VM ID determines SSH port: vm0 -> 2220, vm1 -> 2221, ..., vm9 -> 2229
+    let vm_index = validate_vm_capacity(&instances_dir)
+        .context("Failed to validate VM capacity")?;
+    let vm_id = format!("vm{}", vm_index);
+    let ssh_port = ssh_port_for_vm_index(vm_index)
+        .expect("validate_vm_capacity should ensure valid index");
 
-        info!("VM ID: {}", vm_id);
-        info!("VM directory: {}", vm_dir.display());
+    info!("VM ID: {} (SSH port: {})", vm_id, ssh_port);
 
-        match std::fs::create_dir(&vm_dir) {
-            Ok(_) => {}
-            Err(err) if err.kind() == ErrorKind::AlreadyExists => continue,
-            Err(err) => {
-                bail!(
-                    "Failed to create VM directory {}: {}",
-                    vm_dir.display(),
-                    err
-                );
-            }
-        }
+    // Reserve the fixed SSH port for this VM
+    let _port_reservation = reserve_specific_ssh_port(&instances_dir, ssh_port)
+        .context("Failed to reserve SSH port for VM")?;
 
-        // Step 5: Cloud-init seed
-        sp_start(&mut sp, "Cloud-init seed");
-        notify_progress(&on_progress, 5, 8, "Cloud-init seed");
-        info!("Creating cloud-init seed...");
-        let seed =
-            CloudInitSeed::with_config(hostname.clone(), username.clone(), public_key.clone());
+    let vm_dir = instances_dir.join(&vm_id);
+    info!("VM directory: {}", vm_dir.display());
 
-        let metadata_path = vm_dir.join("meta-data");
-        let userdata_path = vm_dir.join("user-data");
-
-        seed.write_metadata(&metadata_path)?;
-        seed.write_userdata(&userdata_path)?;
-
-        info!("Creating NOCLOUD ISO...");
-        let iso_creator = IsoCreator::new()?;
-        let iso_path = vm_dir.join("seed.iso");
-        iso_creator.create_nocloud_iso(&metadata_path, &userdata_path, &iso_path)?;
-        sp_complete(&mut sp, "created");
-        notify_progress(&on_progress, 5, 8, "Cloud-init seed — created");
-
-        // Step 6: Disk image
-        sp_start(&mut sp, "Disk image");
-        notify_progress(&on_progress, 6, 8, "Disk image");
-        info!("Creating VM disk image...");
-        let vm_disk_path = vm_dir.join("disk.qcow2");
-        copy_disk_image(&image_path, &vm_disk_path, disk_size.as_deref())?;
-        sp_complete(&mut sp, "created");
-        notify_progress(&on_progress, 6, 8, "Disk image — created");
-
-        if selected_ssh_port != requested_ssh_port {
-            info!(
-                "Requested SSH port {} is unavailable; using next available port {}.",
-                requested_ssh_port, selected_ssh_port
+    match std::fs::create_dir(&vm_dir) {
+        Ok(_) => {}
+        Err(err) if err.kind() == ErrorKind::AlreadyExists => {
+            bail!(
+                "VM directory {} already exists - this should not happen with sequential IDs",
+                vm_dir.display()
             );
         }
-
-        // Step 7: QEMU start
-        let qemu_label = if port_attempts > 0 {
-            format!("Starting QEMU (retry {port_attempts}, port {selected_ssh_port})")
-        } else {
-            "Starting QEMU".to_string()
-        };
-        sp_start(&mut sp, &qemu_label);
-        notify_progress(&on_progress, 7, 8, &qemu_label);
-        info!("Building QEMU configuration...");
-        let qemu_config = QemuConfig::from_host_profile(&host_profile)
-            .memory(memory.clone())
-            .cpus(cpus)
-            .disk_image(&vm_disk_path)
-            .cloud_init_iso(&iso_path)
-            .ssh_port(selected_ssh_port)
-            .pid_file(vm_dir.join("qemu.pid"))
-            .name(vm_id.clone())
-            .display(false)
-            .daemonize(!verbose);
-
-        info!("Starting QEMU VM...");
-        let mut runner = QemuRunner::new();
-        let pid = match runner.start(&qemu_config) {
-            Ok(pid) => pid,
-            Err(err) => {
-                sp_fail(&mut sp, &err.to_string());
-                return Err(err);
-            }
-        };
-        info!("VM started with PID: {}", pid);
-
-        let vm_record = VmRecord {
-            id: vm_id.clone(),
-            hostname: hostname.clone(),
-            username: username.clone(),
-            ssh_port: selected_ssh_port,
-            private_key_path: private_key_path.to_string_lossy().to_string(),
-            disk_path: vm_disk_path.to_string_lossy().to_string(),
-            seed_iso_path: iso_path.to_string_lossy().to_string(),
-            pid: Some(pid),
-            status: VmStatus::Running,
-            created_at: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .context("Failed to determine creation time")?
-                .as_secs(),
-            host_profile: format!(
-                "{}/{} ({}, {})",
-                host_profile.os,
-                host_profile.arch,
-                host_profile.machine_type,
-                host_profile.cpu_type,
-            ),
-        };
-
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        if vm_record.runtime_status() == VmRuntimeStatus::Running {
-            let qemu_detail = format!("PID {pid}, port {selected_ssh_port}");
-            sp_complete(&mut sp, &qemu_detail);
-            notify_progress(
-                &on_progress,
-                7,
-                8,
-                &format!("Starting QEMU — {qemu_detail}"),
+        Err(err) => {
+            bail!(
+                "Failed to create VM directory {}: {}",
+                vm_dir.display(),
+                err
             );
-            break vm_record;
         }
+    }
 
-        if !crate::vm::port::is_port_free(selected_ssh_port) {
-            port_attempts = port_attempts
-                .checked_add(1)
-                .context("Failed to track SSH port retry attempts")?;
-            if port_attempts > 20 {
-                sp_fail(&mut sp, "no available port");
-                bail!(
-                    "Could not find an available SSH port after {} attempts starting from {}.",
-                    port_attempts,
-                    requested_ssh_port
-                );
-            }
+    // Step 6: Cloud-init seed
+    sp_start(&mut sp, "Cloud-init seed");
+    notify_progress(&on_progress, 5, 8, "Cloud-init seed");
+    info!("Creating cloud-init seed...");
+    let seed =
+        CloudInitSeed::with_config(hostname.clone(), username.clone(), public_key.clone());
 
-            if let Err(err) = stop_qemu_and_wait(pid, Duration::from_secs(3)) {
-                info!("Unable to stop failed VM on pid {}: {}", pid, err);
-            }
+    let metadata_path = vm_dir.join("meta-data");
+    let userdata_path = vm_dir.join("user-data");
 
-            let next_preferred = selected_ssh_port.checked_add(1).context(format!(
-                "No available SSH ports found starting from {}.",
-                selected_ssh_port
-            ))?;
-            if let Err(err) = std::fs::remove_dir_all(&vm_dir) {
-                info!(
-                    "Failed to remove failed VM directory {}: {}",
-                    vm_dir.display(),
-                    err
-                );
-            }
-            drop(port_reservation);
-            port_reservation = reserve_ssh_port(&instances_dir, next_preferred)?;
-            selected_ssh_port = port_reservation.port();
-            continue;
+    seed.write_metadata(&metadata_path)?;
+    seed.write_userdata(&userdata_path)?;
+
+    info!("Creating NOCLOUD ISO...");
+    let iso_creator = IsoCreator::new()?;
+    let iso_path = vm_dir.join("seed.iso");
+    iso_creator.create_nocloud_iso(&metadata_path, &userdata_path, &iso_path)?;
+    sp_complete(&mut sp, "created");
+    notify_progress(&on_progress, 5, 8, "Cloud-init seed — created");
+
+    // Step 7: Disk image
+    sp_start(&mut sp, "Disk image");
+    notify_progress(&on_progress, 6, 8, "Disk image");
+    info!("Creating VM disk image...");
+    let vm_disk_path = vm_dir.join("disk.qcow2");
+    copy_disk_image(&image_path, &vm_disk_path, disk_size.as_deref())?;
+    sp_complete(&mut sp, "created");
+    notify_progress(&on_progress, 6, 8, "Disk image — created");
+
+    // Step 8: QEMU start
+    sp_start(&mut sp, "Starting QEMU");
+    notify_progress(&on_progress, 7, 8, "Starting QEMU");
+    info!("Building QEMU configuration...");
+    let qemu_config = QemuConfig::from_host_profile(&host_profile)
+        .memory(memory.clone())
+        .cpus(cpus)
+        .disk_image(&vm_disk_path)
+        .cloud_init_iso(&iso_path)
+        .ssh_port(ssh_port)
+        .pid_file(vm_dir.join("qemu.pid"))
+        .name(vm_id.clone())
+        .display(false)
+        .daemonize(!verbose);
+
+    info!("Starting QEMU VM...");
+    let mut runner = QemuRunner::new();
+    let pid = match runner.start(&qemu_config) {
+        Ok(pid) => pid,
+        Err(err) => {
+            sp_fail(&mut sp, &err.to_string());
+            return Err(err);
         }
+    };
+    info!("VM started with PID: {}", pid);
 
+    let vm_record = VmRecord {
+        id: vm_id.clone(),
+        hostname: hostname.clone(),
+        username: username.clone(),
+        ssh_port,
+        private_key_path: private_key_path.to_string_lossy().to_string(),
+        disk_path: vm_disk_path.to_string_lossy().to_string(),
+        seed_iso_path: iso_path.to_string_lossy().to_string(),
+        pid: Some(pid),
+        status: VmStatus::Running,
+        created_at: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .context("Failed to determine creation time")?
+            .as_secs(),
+        host_profile: format!(
+            "{}/{} ({}, {})",
+            host_profile.os,
+            host_profile.arch,
+            host_profile.machine_type,
+            host_profile.cpu_type,
+        ),
+    };
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    if vm_record.runtime_status() != VmRuntimeStatus::Running {
+        // Clean up on failure
+        if let Err(err) = stop_qemu_and_wait(pid, Duration::from_secs(3)) {
+            info!("Unable to stop failed VM on pid {}: {}", pid, err);
+        }
         if let Err(err) = std::fs::remove_dir_all(&vm_dir) {
             info!(
                 "Failed to remove failed VM directory {}: {}",
@@ -664,11 +622,19 @@ async fn run_vm_inner(config: &Config, options: RunOptions) -> Result<VmRecord> 
 
         sp_fail(&mut sp, "process exited");
         bail!(
-            "QEMU failed to stay running after startup. SSH port {} may already be in use or QEMU failed to initialize.\
-             Use --verbose for startup output.",
-            selected_ssh_port
+            "QEMU failed to stay running after startup. \
+             Use --verbose for startup output."
         );
-    };
+    }
+
+    let qemu_detail = format!("PID {pid}, port {ssh_port}");
+    sp_complete(&mut sp, &qemu_detail);
+    notify_progress(
+        &on_progress,
+        7,
+        8,
+        &format!("Starting QEMU — {qemu_detail}"),
+    );
 
     // Persist record before SSH verification so cleanup tools (e.g. `vm rm`) can
     // find the VM even if SSH fails.  On SSH failure we kill QEMU and remove the
@@ -686,11 +652,10 @@ async fn run_vm_inner(config: &Config, options: RunOptions) -> Result<VmRecord> 
     .await
     {
         info!("SSH verification failed; cleaning up QEMU process and VM instance");
-        if let Some(pid) = vm_record.pid {
-            if let Err(e) = stop_qemu_and_wait(pid, Duration::from_secs(5)) {
+        if let Some(pid) = vm_record.pid
+            && let Err(e) = stop_qemu_and_wait(pid, Duration::from_secs(5)) {
                 info!("Failed to stop QEMU pid {}: {}", pid, e);
             }
-        }
         let vm_dir = instances_dir.join(&vm_record.id);
         if let Err(e) = std::fs::remove_dir_all(&vm_dir) {
             info!("Failed to remove VM directory {}: {}", vm_dir.display(), e);
@@ -838,8 +803,8 @@ enum CpEndpoint {
 }
 
 fn parse_cp_endpoint(config: &Config, spec: &str) -> Result<CpEndpoint> {
-    if let Some((id, path)) = spec.split_once(':') {
-        if !id.is_empty() {
+    if let Some((id, path)) = spec.split_once(':')
+        && !id.is_empty() {
             let instances_dir = config.instances_dir();
             if read_vm_record(&instances_dir, id).is_ok() {
                 return Ok(CpEndpoint::Remote {
@@ -848,7 +813,6 @@ fn parse_cp_endpoint(config: &Config, spec: &str) -> Result<CpEndpoint> {
                 });
             }
         }
-    }
 
     Ok(CpEndpoint::Local(spec.to_string()))
 }

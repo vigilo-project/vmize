@@ -89,11 +89,10 @@ pub fn next_vm_id(instances_dir: &Path) -> Result<String> {
             }
 
             let id = entry.file_name().to_string_lossy().into_owned();
-            if let Some(index) = vm_index_from_id(&id) {
-                if max_index.is_none_or(|max| index > max) {
+            if let Some(index) = vm_index_from_id(&id)
+                && max_index.is_none_or(|max| index > max) {
                     max_index = Some(index);
                 }
-            }
         }
     }
 
@@ -211,18 +210,16 @@ fn scan_qemu_processes() -> Vec<(u32, String)> {
 }
 
 fn resolve_qemu_pid(id: &str, record: &VmRecord, instances_dir: &Path) -> Option<u32> {
-    if let Some(pid) = record.pid {
-        if is_qemu_process(pid) {
+    if let Some(pid) = record.pid
+        && is_qemu_process(pid) {
             return Some(pid);
         }
-    }
 
     let pid_file = vm_dir(instances_dir, id).join("qemu.pid");
-    if let Some(pid) = read_pid_file(&pid_file) {
-        if is_qemu_process(pid) {
+    if let Some(pid) = read_pid_file(&pid_file)
+        && is_qemu_process(pid) {
             return Some(pid);
         }
-    }
 
     let name_token = format!("-name {id}");
     let mut best_match: Option<(u32, u8)> = None;

@@ -44,12 +44,11 @@ impl QemuRunner {
         if let Some(pid_file) = config.pid_file_path() {
             let deadline = Instant::now() + Duration::from_secs(3);
             loop {
-                if let Ok(output) = fs::read_to_string(pid_file) {
-                    if let Ok(pid_from_file) = output.trim().parse::<u32>() {
+                if let Ok(output) = fs::read_to_string(pid_file)
+                    && let Ok(pid_from_file) = output.trim().parse::<u32>() {
                         pid = pid_from_file;
                         break;
                     }
-                }
 
                 if Instant::now() > deadline {
                     break;
