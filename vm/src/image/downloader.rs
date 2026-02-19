@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use futures::StreamExt;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use reqwest::Client;
@@ -145,24 +145,7 @@ impl ImageDownloader {
             );
         }
 
-        match tokio::fs::rename(&temp_path, &dest).await {
-            Ok(()) => {}
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-                tokio::fs::remove_file(&dest).await.with_context(|| {
-                    format!("Failed to overwrite existing image {}", dest.display())
-                })?;
-                tokio::fs::rename(&temp_path, &dest)
-                    .await
-                    .with_context(|| {
-                        format!("Failed to finalize image file: {}", dest.display())
-                    })?;
-            }
-            Err(err) => {
-                let _ = tokio::fs::remove_file(&temp_path).await;
-                return Err(err)
-                    .context(format!("Failed to finalize image file: {}", dest.display()));
-            }
-        }
+        Self::finalize_download(&temp_path, dest).await?;
 
         // Verify the file
         let file_size = tokio::fs::metadata(dest).await?.len();
@@ -236,6 +219,73 @@ impl ImageDownloader {
 
         Ok(output.status.success())
     }
+
+    async fn finalize_download(temp_path: &Path, dest: &Path) -> Result<()> {
+        if dest.exists() && Self::verify_image(dest).unwrap_or(false) {
+            tokio::fs::remove_file(temp_path).await.with_context(|| {
+                format!(
+                    "Failed to remove temporary image file after concurrent finalize: {}",
+                    temp_path.display()
+                )
+            })?;
+            return Ok(());
+        }
+
+        match tokio::fs::rename(temp_path, dest).await {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                if Self::verify_image(dest).unwrap_or(false) {
+                    tokio::fs::remove_file(temp_path).await.with_context(|| {
+                        format!(
+                            "Failed to remove temporary image file after concurrent finalize: {}",
+                            temp_path.display()
+                        )
+                    })?;
+                    return Ok(());
+                }
+
+                match tokio::fs::remove_file(dest).await {
+                    Ok(()) => {}
+                    Err(remove_err) if remove_err.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(remove_err) => {
+                        return Err(remove_err).with_context(|| {
+                            format!("Failed to overwrite existing image {}", dest.display())
+                        });
+                    }
+                }
+
+                match tokio::fs::rename(temp_path, dest).await {
+                    Ok(()) => Ok(()),
+                    Err(rename_err) if rename_err.kind() == std::io::ErrorKind::AlreadyExists => {
+                        if Self::verify_image(dest).unwrap_or(false) {
+                            tokio::fs::remove_file(temp_path).await.with_context(|| {
+                                format!(
+                                    "Failed to remove temporary image file after concurrent finalize: {}",
+                                    temp_path.display()
+                                )
+                            })?;
+                            Ok(())
+                        } else {
+                            let _ = tokio::fs::remove_file(temp_path).await;
+                            Err(rename_err).context(format!(
+                                "Failed to finalize image file: {}",
+                                dest.display()
+                            ))
+                        }
+                    }
+                    Err(rename_err) => {
+                        let _ = tokio::fs::remove_file(temp_path).await;
+                        Err(rename_err)
+                            .context(format!("Failed to finalize image file: {}", dest.display()))
+                    }
+                }
+            }
+            Err(err) => {
+                let _ = tokio::fs::remove_file(temp_path).await;
+                Err(err).context(format!("Failed to finalize image file: {}", dest.display()))
+            }
+        }
+    }
 }
 
 impl Default for ImageDownloader {
@@ -270,5 +320,41 @@ mod tests {
         let path = dir.path().join("valid.img");
         std::fs::write(&path, b"QFI\xfb").unwrap();
         assert!(ImageDownloader::verify_image(&path).unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_finalize_download_keeps_valid_existing_file() {
+        let dir = TempDir::new().unwrap();
+        let dest = dir.path().join("ubuntu.img");
+        let temp = dir.path().join("ubuntu.img.part");
+        std::fs::write(&dest, b"QFI\xfbexisting").unwrap();
+        std::fs::write(&temp, b"QFI\xfbnew").unwrap();
+
+        ImageDownloader::finalize_download(&temp, &dest)
+            .await
+            .unwrap();
+
+        assert!(!temp.exists(), "temporary file should be cleaned up");
+        assert_eq!(
+            std::fs::read(&dest).unwrap(),
+            b"QFI\xfbexisting",
+            "existing valid image should not be overwritten",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_finalize_download_replaces_invalid_existing_file() {
+        let dir = TempDir::new().unwrap();
+        let dest = dir.path().join("ubuntu.img");
+        let temp = dir.path().join("ubuntu.img.part");
+        std::fs::write(&dest, b"").unwrap();
+        std::fs::write(&temp, b"QFI\xfbnew").unwrap();
+
+        ImageDownloader::finalize_download(&temp, &dest)
+            .await
+            .unwrap();
+
+        assert!(!temp.exists(), "temporary file should be moved");
+        assert_eq!(std::fs::read(&dest).unwrap(), b"QFI\xfbnew");
     }
 }
