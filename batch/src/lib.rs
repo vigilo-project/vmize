@@ -13,4 +13,7 @@ pub use runner::{
     run_task_with_options, run_task_with_progress, RunPhase, RunProgress, TaskRunOptions,
 };
 pub use task::{load_task, LoadedTask, TaskDefinition};
-pub use vm_ops::{MockVmOps, RealVmOps, VmOps, VmOptions};
+pub use vm_ops::{RealVmOps, VmOps, VmOptions};
+
+#[cfg(test)]
+pub use vm_ops::MockVmOps;
