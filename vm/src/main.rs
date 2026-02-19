@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use vm::{cp, ps, rm, run, ssh, ssh_stream, RunOptions};
+use vm::{RunOptions, cp, ps, rm, run, ssh, ssh_stream};
 
 /// VM CLI - Ubuntu Cloud Image VM Automation
 #[derive(Parser, Debug)]

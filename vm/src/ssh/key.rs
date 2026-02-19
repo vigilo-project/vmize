@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::collections::hash_map::DefaultHasher;
 use std::fs::OpenOptions;
 use std::hash::{Hash, Hasher};
@@ -128,10 +128,7 @@ fn acquire_file_lock(lock_path: &Path) -> Result<LockGuard> {
         }
     }
 
-    bail!(
-        "Timeout waiting for lock file {}",
-        lock_path.display()
-    )
+    bail!("Timeout waiting for lock file {}", lock_path.display())
 }
 
 /// Guard that releases the file lock when dropped
@@ -142,9 +139,14 @@ struct LockGuard {
 impl Drop for LockGuard {
     fn drop(&mut self) {
         if let Err(err) = std::fs::remove_file(&self.path)
-            && err.kind() != ErrorKind::NotFound {
-                eprintln!("Failed to remove lock file {}: {}", self.path.display(), err);
-            }
+            && err.kind() != ErrorKind::NotFound
+        {
+            eprintln!(
+                "Failed to remove lock file {}: {}",
+                self.path.display(),
+                err
+            );
+        }
     }
 }
 

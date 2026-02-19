@@ -1,6 +1,6 @@
 use super::QemuConfig;
 use crate::process::{is_process_absent_error, is_qemu_process};
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::process::Child;
 use std::time::{Duration, Instant};
 use std::{fs, thread};
@@ -45,10 +45,11 @@ impl QemuRunner {
             let deadline = Instant::now() + Duration::from_secs(3);
             loop {
                 if let Ok(output) = fs::read_to_string(pid_file)
-                    && let Ok(pid_from_file) = output.trim().parse::<u32>() {
-                        pid = pid_from_file;
-                        break;
-                    }
+                    && let Ok(pid_from_file) = output.trim().parse::<u32>()
+                {
+                    pid = pid_from_file;
+                    break;
+                }
 
                 if Instant::now() > deadline {
                     break;

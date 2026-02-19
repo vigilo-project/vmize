@@ -1,5 +1,5 @@
 use crate::process::is_process_alive;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::fs::OpenOptions;
 use std::io::{ErrorKind, Write};
 use std::net::TcpListener;
@@ -213,12 +213,13 @@ impl SshPortReservation {
 impl Drop for SshPortReservation {
     fn drop(&mut self) {
         if let Err(err) = std::fs::remove_file(&self.lock_path)
-            && err.kind() != ErrorKind::NotFound {
-                eprintln!(
-                    "Failed to remove SSH port lock {}: {err}",
-                    self.lock_path.display()
-                );
-            }
+            && err.kind() != ErrorKind::NotFound
+        {
+            eprintln!(
+                "Failed to remove SSH port lock {}: {err}",
+                self.lock_path.display()
+            );
+        }
     }
 }
 
@@ -280,13 +281,11 @@ pub fn reserve_specific_ssh_port(instances_dir: &Path, port: u16) -> Result<SshP
                 port
             );
         }
-        Err(err) => {
-            Err(err).context(format!(
-                "Failed to reserve SSH port {} with lock {}",
-                port,
-                lock_path.display()
-            ))
-        }
+        Err(err) => Err(err).context(format!(
+            "Failed to reserve SSH port {} with lock {}",
+            port,
+            lock_path.display()
+        )),
     }
 }
 
@@ -411,10 +410,8 @@ mod tests {
         let _first = acquire_vm_creation_lock(instances_dir.path()).unwrap();
 
         // Second lock attempt should time out with very short timeout
-        let result = acquire_vm_creation_lock_with_timeout(
-            instances_dir.path(),
-            Duration::from_millis(50),
-        );
+        let result =
+            acquire_vm_creation_lock_with_timeout(instances_dir.path(), Duration::from_millis(50));
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("Timed out waiting for VM creation lock"));
@@ -437,11 +434,12 @@ mod tests {
         });
 
         // Second lock attempt should succeed with a timeout that's longer than the release delay
-        let result = acquire_vm_creation_lock_with_timeout(
-            &instances_dir_path,
-            Duration::from_millis(500),
+        let result =
+            acquire_vm_creation_lock_with_timeout(&instances_dir_path, Duration::from_millis(500));
+        assert!(
+            result.is_ok(),
+            "Should have acquired lock after first was released"
         );
-        assert!(result.is_ok(), "Should have acquired lock after first was released");
 
         // Verify the lock file contains our PID
         let content = std::fs::read_to_string(&lock_path).unwrap();

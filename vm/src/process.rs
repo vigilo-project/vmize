@@ -17,12 +17,13 @@ pub fn is_process_alive(pid: u32) -> bool {
     if let Ok(output) = Command::new("ps")
         .args(["-p", &pid.to_string(), "-o", "state="])
         .output()
-        && output.status.success() {
-            let state = String::from_utf8_lossy(&output.stdout)
-                .trim()
-                .to_ascii_uppercase();
-            return !state.starts_with('Z');
-        }
+        && output.status.success()
+    {
+        let state = String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .to_ascii_uppercase();
+        return !state.starts_with('Z');
+    }
 
     true
 }

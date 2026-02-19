@@ -1,9 +1,7 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
-pub const UBUNTU_24_04_MINIMAL_AMD64_URL: &str =
-    "https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-amd64.img";
-pub const UBUNTU_24_04_MINIMAL_ARM64_URL: &str =
-    "https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img";
+pub const UBUNTU_24_04_MINIMAL_AMD64_URL: &str = "https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-amd64.img";
+pub const UBUNTU_24_04_MINIMAL_ARM64_URL: &str = "https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostProfile {

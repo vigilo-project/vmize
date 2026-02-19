@@ -1,17 +1,17 @@
 use crate::cloud_init::{CloudInitSeed, IsoCreator};
 use crate::config::Config;
-use crate::image::{copy_disk_image, ImageDownloader};
+use crate::image::{ImageDownloader, copy_disk_image};
 use crate::platform::HostProfile;
 use crate::process::is_process_alive;
-use crate::progress::{sp_complete, sp_fail, sp_start, StepProgress};
+use crate::progress::{StepProgress, sp_complete, sp_fail, sp_start};
 use crate::qemu::{QemuConfig, QemuRunner};
 use crate::ssh::SshClient;
 use crate::vm::{
-    acquire_vm_creation_lock, keep_key_paths, list_vm_records, read_vm_record, remove_vm_instance,
-    reserve_specific_ssh_port, ssh_port_for_vm_index, ssh_port_locks_dir, stop_qemu_and_wait,
-    validate_vm_capacity, write_vm_record, VmRecord, VmRuntimeStatus, VmStatus,
+    VmRecord, VmRuntimeStatus, VmStatus, acquire_vm_creation_lock, keep_key_paths, list_vm_records,
+    read_vm_record, remove_vm_instance, reserve_specific_ssh_port, ssh_port_for_vm_index,
+    ssh_port_locks_dir, stop_qemu_and_wait, validate_vm_capacity, write_vm_record,
 };
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -194,7 +194,7 @@ fn scp_transfer_inner(
     let remote_spec = format!("{}@127.0.0.1", record.username);
 
     let mut args = Vec::new();
-    args.push("-O");  // Use legacy SCP protocol to avoid "unexpected filename" errors
+    args.push("-O"); // Use legacy SCP protocol to avoid "unexpected filename" errors
     if recursive {
         args.push("-r");
     }
@@ -496,15 +496,15 @@ async fn run_vm_inner(config: &Config, options: RunOptions) -> Result<VmRecord> 
 
     // Step 5: Validate capacity, allocate VM ID, reserve port, create directory
     // All under a global lock to prevent race conditions during concurrent VM creation
-    let vm_creation_lock = acquire_vm_creation_lock(&instances_dir)
-        .context("Failed to acquire VM creation lock")?;
+    let vm_creation_lock =
+        acquire_vm_creation_lock(&instances_dir).context("Failed to acquire VM creation lock")?;
 
     // VM ID determines SSH port: vm0 -> 2220, vm1 -> 2221, ..., vm9 -> 2229
-    let vm_index = validate_vm_capacity(&instances_dir)
-        .context("Failed to validate VM capacity")?;
+    let vm_index =
+        validate_vm_capacity(&instances_dir).context("Failed to validate VM capacity")?;
     let vm_id = format!("vm{}", vm_index);
-    let ssh_port = ssh_port_for_vm_index(vm_index)
-        .expect("validate_vm_capacity should ensure valid index");
+    let ssh_port =
+        ssh_port_for_vm_index(vm_index).expect("validate_vm_capacity should ensure valid index");
 
     info!("VM ID: {} (SSH port: {})", vm_id, ssh_port);
 
@@ -540,8 +540,7 @@ async fn run_vm_inner(config: &Config, options: RunOptions) -> Result<VmRecord> 
     sp_start(&mut sp, "Cloud-init seed");
     notify_progress(&on_progress, 5, 8, "Cloud-init seed");
     info!("Creating cloud-init seed...");
-    let seed =
-        CloudInitSeed::with_config(hostname.clone(), username.clone(), public_key.clone());
+    let seed = CloudInitSeed::with_config(hostname.clone(), username.clone(), public_key.clone());
 
     let metadata_path = vm_dir.join("meta-data");
     let userdata_path = vm_dir.join("user-data");
@@ -607,10 +606,7 @@ async fn run_vm_inner(config: &Config, options: RunOptions) -> Result<VmRecord> 
             .as_secs(),
         host_profile: format!(
             "{}/{} ({}, {})",
-            host_profile.os,
-            host_profile.arch,
-            host_profile.machine_type,
-            host_profile.cpu_type,
+            host_profile.os, host_profile.arch, host_profile.machine_type, host_profile.cpu_type,
         ),
     };
 
@@ -661,9 +657,10 @@ async fn run_vm_inner(config: &Config, options: RunOptions) -> Result<VmRecord> 
     {
         info!("SSH verification failed; cleaning up QEMU process and VM instance");
         if let Some(pid) = vm_record.pid
-            && let Err(e) = stop_qemu_and_wait(pid, Duration::from_secs(5)) {
-                info!("Failed to stop QEMU pid {}: {}", pid, e);
-            }
+            && let Err(e) = stop_qemu_and_wait(pid, Duration::from_secs(5))
+        {
+            info!("Failed to stop QEMU pid {}: {}", pid, e);
+        }
         let vm_dir = instances_dir.join(&vm_record.id);
         if let Err(e) = std::fs::remove_dir_all(&vm_dir) {
             info!("Failed to remove VM directory {}: {}", vm_dir.display(), e);
@@ -812,15 +809,16 @@ enum CpEndpoint {
 
 fn parse_cp_endpoint(config: &Config, spec: &str) -> Result<CpEndpoint> {
     if let Some((id, path)) = spec.split_once(':')
-        && !id.is_empty() {
-            let instances_dir = config.instances_dir();
-            if read_vm_record(&instances_dir, id).is_ok() {
-                return Ok(CpEndpoint::Remote {
-                    id: id.to_string(),
-                    path: path.to_string(),
-                });
-            }
+        && !id.is_empty()
+    {
+        let instances_dir = config.instances_dir();
+        if read_vm_record(&instances_dir, id).is_ok() {
+            return Ok(CpEndpoint::Remote {
+                id: id.to_string(),
+                path: path.to_string(),
+            });
         }
+    }
 
     Ok(CpEndpoint::Local(spec.to_string()))
 }
@@ -847,7 +845,9 @@ pub(crate) fn cp_transfer(config: &Config, src: &str, dest: &str, recursive: boo
             ScpDirection::VmToLocal,
         ),
         (CpEndpoint::Remote { id: src_id, .. }, CpEndpoint::Remote { id: dest_id, .. }) => {
-            bail!("cp requires one local path and one VM path (got remote paths for '{src_id}' and '{dest_id}')")
+            bail!(
+                "cp requires one local path and one VM path (got remote paths for '{src_id}' and '{dest_id}')"
+            )
         }
         (CpEndpoint::Local(_), CpEndpoint::Local(_)) => {
             bail!("cp requires one VM path in the form <vm-id>:<path>")

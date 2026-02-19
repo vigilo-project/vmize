@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use openssh::{KnownHosts, Session, SessionBuilder};
 use std::path::PathBuf;
 use std::time::Duration;

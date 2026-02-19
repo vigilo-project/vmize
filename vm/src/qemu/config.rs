@@ -1,5 +1,5 @@
 use crate::platform::HostProfile;
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -235,14 +235,16 @@ impl QemuConfig {
         }
 
         if let Some(disk) = &self.disk_image
-            && !disk.exists() {
-                bail!("Disk image does not exist: {}", disk.display());
-            }
+            && !disk.exists()
+        {
+            bail!("Disk image does not exist: {}", disk.display());
+        }
 
         if let Some(iso) = &self.cloud_init_iso
-            && !iso.exists() {
-                bail!("Cloud-init ISO does not exist: {}", iso.display());
-            }
+            && !iso.exists()
+        {
+            bail!("Cloud-init ISO does not exist: {}", iso.display());
+        }
 
         Ok(())
     }
@@ -321,9 +323,10 @@ mod tests {
         assert!(args.contains(&"-netdev".to_string()));
         assert!(args.iter().any(|arg| arg.contains("hostfwd=tcp::2222-:22")));
         assert!(args.iter().any(|arg| arg.contains("-pidfile")));
-        assert!(args
-            .iter()
-            .any(|arg| arg.contains(temp_file.path().to_string_lossy().as_ref())));
+        assert!(
+            args.iter()
+                .any(|arg| arg.contains(temp_file.path().to_string_lossy().as_ref()))
+        );
     }
 
     #[test]
@@ -362,10 +365,12 @@ mod tests {
         let config = QemuConfig::new();
         let result = config.validate();
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Disk image is required"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Disk image is required")
+        );
     }
 
     #[test]
@@ -374,10 +379,12 @@ mod tests {
         let config = QemuConfig::new().disk_image(temp_file.path());
         let result = config.validate();
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Cloud-init ISO is required"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Cloud-init ISO is required")
+        );
     }
 
     #[test]
