@@ -4,17 +4,25 @@ use std::path::PathBuf;
 pub struct RunResult {
     pub vm_id: String,
     pub output_dir: PathBuf,
-    pub executed_scripts: Vec<String>,
+    pub logs_dir: PathBuf,
+    pub executed_commands: Vec<String>,
+    pub collected_artifacts: Vec<String>,
     pub exit_code: i32,
     pub elapsed_ms: u64,
 }
 
 impl RunResult {
-    pub fn new(vm_id: impl Into<String>, output_dir: impl Into<PathBuf>) -> Self {
+    pub fn new(
+        vm_id: impl Into<String>,
+        output_dir: impl Into<PathBuf>,
+        logs_dir: impl Into<PathBuf>,
+    ) -> Self {
         Self {
             vm_id: vm_id.into(),
             output_dir: output_dir.into(),
-            executed_scripts: Vec::new(),
+            logs_dir: logs_dir.into(),
+            executed_commands: Vec::new(),
+            collected_artifacts: Vec::new(),
             exit_code: 0,
             elapsed_ms: 0,
         }

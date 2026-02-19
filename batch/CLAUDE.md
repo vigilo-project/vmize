@@ -16,26 +16,72 @@ cargo clippy                   # Lint
 cargo fmt                      # Format
 ```
 
+## Task Directory Layout
+
+```
+tasks/my-task/
+├── task.json          # Task definition
+├── input/             # Scripts and assets (binary files allowed)
+│   ├── 00_setup.sh
+│   └── 10_run.sh
+└── output/
+    ├── result.txt     # Written by scripts to /tmp/batch/out/
+    └── logs/          # Per-command stdout/stderr logs (00_setup.sh.log, …)
+```
+
+## task.json Schema
+
+```json
+{
+  "name": "my-task",
+  "description": "optional description",
+  "disk_size": "20G",
+  "commands": ["00_setup.sh", "10_run.sh"],
+  "artifacts": ["result.txt"]
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | no | Display name |
+| `description` | string | no | Description |
+| `disk_size` | string | no | VM disk size (e.g. `"20G"`) |
+| `commands` | `string[]` | yes | Files to execute, relative to `input/` |
+| `artifacts` | `string[]` | no | Expected output files in `output/`; if omitted, copies all of `out/` |
+
 ## Module Layout
 
-- **`runner.rs`** — orchestration: `run_task` (async) / `run_task_blocking` (sync), helper functions `prepare_vm`, `execute_scripts`
+- **`task.rs`** — `TaskDefinition` (serde), `LoadedTask` (resolved paths), `load_task()` (validates `input/` + command files, creates `output/logs/`)
+- **`runner.rs`** — orchestration: `run_loaded_task` (async) / `run_loaded_task_blocking` (sync)
 - **`error.rs`** — `Error` enum (`thiserror`), one variant per pipeline stage
-- **`result.rs`** — `RunResult` (vm_id, output_dir, executed_scripts, exit_code, elapsed_ms)
+- **`result.rs`** — `RunResult` (vm_id, output_dir, logs_dir, executed_commands, collected_artifacts, exit_code, elapsed_ms)
+- **`vm_ops.rs`** — `VmOps` trait + `RealVmOps` (production) + `MockVmOps` (testing)
 - **`../cli/src/main.rs`** — workspace CLI entry point (`vmize task` sequential and `--concurrent`)
 
 ## Core Flow (`runner.rs`)
 
-1. Validate paths, discover scripts (sorted alphabetically)
+1. `load_task()` — parse `task.json`, validate `input/` dir + all command files exist, create `output/logs/`
 2. `vm::run()` → spin up VM
-3. `prepare_vm()` → mkdir + copy scripts into VM
-4. `execute_scripts()` → run each script via SSH, stream output
-5. `vm::cp_from()` → collect `/tmp/batch/out` back to host
-6. `vm::rm()` → destroy VM
+3. `prepare_vm()` — `mkdir /tmp/batch/out /tmp/batch/logs`, `scp input/ → /tmp/batch/work/`
+4. `execute_commands()` — for each command: `cd /tmp/batch/work && bash {cmd} 2>&1 | tee /tmp/batch/logs/{cmd}.log`
+5. Collect logs: `scp /tmp/batch/logs/* → output/logs/`
+6. Collect output: if `artifacts` specified, copy each individually + verify; otherwise copy all of `/tmp/batch/out/`
+7. `vm::rm()` → destroy VM
 
-Cleanup always runs, even on failure. Errors are combined, not swallowed.
+Cleanup always runs, even on failure. Errors are combined, not swallowed. Log collection is best-effort (non-fatal).
+
+## VM Directory Layout (inside VM)
+
+```
+/tmp/batch/
+├── work/    # Contents of input/ copied here; scripts run from this directory
+├── out/     # Scripts write output files here
+└── logs/    # Runner writes per-command tee logs here
+```
 
 ## Conventions
 
 - **Error handling**: `thiserror` for `Error` enum; `vm` crate errors are stringified
 - **Async**: tokio for VM ops; blocking variants create their own runtime
-- **Scripts**: executed in alphabetical order (`00_`, `10_`, `20_` naming)
+- **Commands**: executed in declaration order from `task.json` (`commands` array)
+- **Log files**: named `{command_basename}.log` (e.g. `00_setup.sh` → `00_setup.sh.log`)

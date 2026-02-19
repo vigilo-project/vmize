@@ -9,7 +9,7 @@ This repository is a Cargo workspace with four crates and one shared tasks direc
 - `batch/`: task-directory runner built on top of `vm`.
 - `dashboard/`: web UI/API library for queueing and running `batch` tasks.
 - `cli/`: workspace CLI (`vmize`) for running tasks and starting the dashboard.
-- `tasks/`: shared task fixtures (`task.json`, `scripts/`, `output/`).
+- `tasks/`: shared task fixtures (`task.json`, `input/`, `output/`).
 
 Key paths:
 - `vm/src/`, `batch/src/`, `dashboard/src/`, `cli/src/`
@@ -29,7 +29,7 @@ Required verification commands:
 
 Optional extended checks:
 - `DASHBOARD_IT=1 cargo test --test api run_api_run_task_succeeds -p dashboard -- --nocapture`
-- `BATCH_OLLAMA_IT=1 cargo test run_task_with_options_ollama_prompt_collects_answer --test integration -p batch -- --nocapture`
+- `BATCH_OLLAMA_IT=1 cargo test run_task_ollama_prompt_collects_answer --test integration -p batch -- --nocapture`
 
 ## Dashboard MVP Priority
 For any change in `dashboard/` (UI, API, task execution flow, SSE), treat `dashboard/AGENTS.md` as the release gate.

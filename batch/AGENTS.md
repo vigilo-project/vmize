@@ -7,20 +7,23 @@
 - `src/lib.rs` — public API surface
 - `src/runner.rs`, `src/result.rs`, `src/error.rs` — core logic
 - `src/task.rs` — task definition loading (`task.json`)
+- `src/vm_ops.rs` — `VmOps` trait, `RealVmOps`, `MockVmOps`
 - `tests/integration.rs` — end-to-end tests (requires QEMU)
 - `example/` — sample task directories
 - `../cli/src/main.rs` — workspace CLI entrypoint (`vmize task`)
 
 ## Minimum Goal (MVP)
 A `batch` change is acceptable only if all of these remain true:
-1. A valid task directory (`task.json` + `scripts/`) runs successfully.
-2. Task scripts execute in deterministic filename order.
-3. Output is collected back to host `output/`.
+1. A valid task directory (`task.json` + `input/`) runs successfully.
+2. Task commands execute in the order declared in `task.json`.
+3. Output is collected back to host `output/`; logs land in `output/logs/`.
 4. Failure is surfaced as non-zero exit and clear error output.
 5. `--concurrent` rejects more than 4 tasks.
 
 ## Acceptance Checklist
 - Task loading errors are clear (`Failed to load task ...`).
+- Missing `input/` directory is caught at load time, not at runtime.
+- Missing command files in `input/` are caught at load time.
 - Successful runs produce expected output artifacts.
 - `--concurrent` limit enforcement is unchanged.
 - `vmize task` usage/help behavior is unchanged for invalid args.
@@ -28,11 +31,12 @@ A `batch` change is acceptable only if all of these remain true:
 ## Verification Commands
 ```bash
 cargo build --release -p batch
-cargo test -p batch
+cargo test -p batch --lib      # unit tests only (no QEMU)
+cargo test -p batch            # all tests (integration requires QEMU)
 cargo run -p vmize -- task --help
 
 # Optional integration path
-BATCH_OLLAMA_IT=1 cargo test run_task_with_options_ollama_prompt_collects_answer --test integration -p batch -- --nocapture
+BATCH_OLLAMA_IT=1 cargo test run_task_ollama_prompt_collects_answer --test integration -p batch -- --nocapture
 ```
 
 ## Conventions

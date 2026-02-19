@@ -9,10 +9,10 @@ pub const MAX_CONCURRENT_TASKS: usize = 4;
 pub use error::Error;
 pub use result::RunResult;
 pub use runner::{
-    run_task, run_task_blocking, run_task_blocking_with_options, run_task_blocking_with_progress,
-    run_task_with_options, run_task_with_progress, RunPhase, RunProgress, TaskRunOptions,
+    RunPhase, RunProgress, TaskRunOptions, run_loaded_task, run_loaded_task_blocking,
+    run_loaded_task_blocking_with_progress, run_loaded_task_with_progress,
 };
-pub use task::{load_task, LoadedTask, TaskDefinition};
+pub use task::{LoadedTask, TaskDefinition, load_task};
 pub use vm_ops::{RealVmOps, VmOps, VmOptions};
 
 #[cfg(test)]

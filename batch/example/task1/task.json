@@ -1,4 +1,8 @@
 {
   "name": "task1-print-result",
-  "description": "Print a message and write output files to verify basic pipeline"
+  "description": "Print a message and write output files to verify basic pipeline",
+  "commands": [
+    "00_print.sh",
+    "10_result.sh"
+  ]
 }

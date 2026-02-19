@@ -3,23 +3,14 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("Input path does not exist: {path}")]
-    InputPathNotFound { path: PathBuf },
+    #[error("Command '{command}' not found in input: {path}")]
+    CommandNotFound { command: String, path: PathBuf },
 
-    #[error("Input path is not a directory: {path}")]
-    InputPathNotDirectory { path: PathBuf },
+    #[error("Artifact not found after task: {file}")]
+    MissingArtifact { file: String },
 
     #[error("Output path is not valid UTF-8: {path}")]
     NonUtf8Path { path: PathBuf },
-
-    #[error("Failed to discover scripts in {path}: {source}")]
-    ScriptDiscovery {
-        path: PathBuf,
-        source: std::io::Error,
-    },
-
-    #[error("No files were found in {0}")]
-    NoScripts(PathBuf),
 
     #[error("Failed to start VM: {message}")]
     VmStart { message: String },

@@ -5,7 +5,7 @@ use std::thread;
 use clap::{Parser, Subcommand};
 
 use batch::{
-    load_task, run_task_blocking_with_options, Error, TaskRunOptions, MAX_CONCURRENT_TASKS,
+    MAX_CONCURRENT_TASKS, TaskRunOptions, load_task, run_loaded_task_blocking,
 };
 
 /// VMize CLI — run VM tasks and manage the dashboard
@@ -24,7 +24,7 @@ enum Commands {
         #[arg(long)]
         concurrent: bool,
 
-        /// Task directories containing task.json + scripts/
+        /// Task directories containing task.json + input/
         #[arg(value_name = "TASK_DIR")]
         tasks: Vec<PathBuf>,
     },
@@ -85,9 +85,7 @@ fn run_sequential(tasks: &[PathBuf]) {
             disk_size: loaded.definition.disk_size.clone(),
             ..Default::default()
         };
-        if let Err(err) =
-            run_task_blocking_with_options(&loaded.input_dir, &loaded.output_dir, options)
-        {
+        if let Err(err) = run_loaded_task_blocking(&loaded, options) {
             eprintln!("{}", format_task_error(&task_name, err));
             process::exit(1);
         }
@@ -118,11 +116,10 @@ fn run_concurrent(tasks: &[PathBuf]) {
                         .clone()
                         .unwrap_or_else(|| task_path.display().to_string());
                     eprintln!("[start] {name}");
-                    run_task_blocking_with_options(
-                        &loaded.input_dir,
-                        &loaded.output_dir,
+                    run_loaded_task_blocking(
+                        &loaded,
                         TaskRunOptions {
-                            disk_size: loaded.definition.disk_size,
+                            disk_size: loaded.definition.disk_size.clone(),
                             ..Default::default()
                         },
                     )
@@ -149,6 +146,6 @@ fn run_concurrent(tasks: &[PathBuf]) {
     }
 }
 
-fn format_task_error(task_name: &str, err: Error) -> String {
+fn format_task_error(task_name: &str, err: batch::Error) -> String {
     format!("Failed to execute {task_name}: {err}")
 }

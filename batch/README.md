@@ -5,9 +5,9 @@ It runs task directories in ephemeral VMs so each workload is isolated.
 `batch` is a library crate; use the workspace `vmize` CLI to execute tasks.
 
 Built on top of [`vm`](https://github.com/vigilo-project/vm), `batch` defines a task as:
-- `task.json`
-- `scripts/`
-- `output/`
+- `task.json` — task definition with explicit `commands` list
+- `input/` — scripts and assets to copy into the VM
+- `output/` — collected output files and per-command logs
 
 Shared curated tasks in this workspace live in `../tasks/`.
 
@@ -23,6 +23,7 @@ Shared curated tasks in this workspace live in `../tasks/`.
 - Multi-task run works sequentially.
 - `--concurrent` accepts up to 4 tasks and rejects the 5th.
 - Output files are present after successful runs.
+- Per-command logs appear in `output/logs/`.
 
 ## Quick Start
 
@@ -52,8 +53,9 @@ cargo build --release
 ```text
 <task-dir>/
 ├── task.json
-├── scripts/
+├── input/          # Scripts and binary assets
 └── output/
+    └── logs/       # Per-command stdout/stderr (auto-created)
 ```
 
 Example `task.json`:
@@ -62,15 +64,21 @@ Example `task.json`:
 {
   "name": "my-task",
   "description": "Build and test in an ephemeral VM",
-  "disk_size": "20G"
+  "disk_size": "20G",
+  "commands": ["00_setup.sh", "10_run.sh"],
+  "artifacts": ["result.txt"]
 }
 ```
+
+`commands` — ordered list of files in `input/` to execute inside the VM.
+`artifacts` — expected output files; if omitted, all of `/tmp/batch/out/` is copied back.
 
 ## Verification Commands
 
 ```bash
-cargo test -p batch
+cargo test -p batch --lib     # unit tests only (no QEMU)
+cargo test -p batch           # all tests (integration requires QEMU)
 
-# Optional integration path
-BATCH_OLLAMA_IT=1 cargo test run_task_with_options_ollama_prompt_collects_answer --test integration -p batch -- --nocapture
+# Optional integration paths
+BATCH_OLLAMA_IT=1 cargo test run_task_ollama_prompt_collects_answer --test integration -p batch -- --nocapture
 ```

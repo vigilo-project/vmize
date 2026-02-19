@@ -1,4 +1,7 @@
 {
   "name": "split-task2",
-  "description": "Number guessing game solved with binary search"
+  "description": "Tic-tac-toe bot match, logs board state each turn",
+  "commands": [
+    "00_live.sh"
+  ]
 }

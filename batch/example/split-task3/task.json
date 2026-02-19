@@ -1,4 +1,7 @@
 {
   "name": "split-task3",
-  "description": "Rock-paper-scissors tournament, 10 rounds"
+  "description": "Tic-tac-toe bot match, logs board state each turn",
+  "commands": [
+    "00_live.sh"
+  ]
 }

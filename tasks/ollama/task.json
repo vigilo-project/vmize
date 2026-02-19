@@ -1,5 +1,8 @@
 {
   "name": "ollama-prompt",
   "description": "Run a local LLM prompt via Ollama and collect the answer",
-  "disk_size": "20G"
+  "disk_size": "20G",
+  "commands": [
+    "20_ollama_prompt.sh"
+  ]
 }

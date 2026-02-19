@@ -6,22 +6,22 @@ use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
 use axum::{
+    Json, Router,
     extract::{Path, State},
     http::StatusCode,
     response::{
-        sse::{Event, KeepAlive, Sse},
         IntoResponse, Response,
+        sse::{Event, KeepAlive, Sse},
     },
     routing::{delete, get, post},
-    Json, Router,
 };
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
 use batch::{
-    load_task, run_task_blocking_with_progress, RunPhase, RunProgress, TaskRunOptions,
-    MAX_CONCURRENT_TASKS,
+    MAX_CONCURRENT_TASKS, RunPhase, RunProgress, TaskRunOptions, load_task,
+    run_loaded_task_blocking_with_progress,
 };
 
 const SSE_REPLAY_CAPACITY: usize = 100;
@@ -213,7 +213,7 @@ async fn add_task(State(app): State<AppState>, Json(req): Json<AddTaskRequest>) 
         Err(err) => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": err})),
+                Json(serde_json::json!({"error": err.to_string()})),
             )
                 .into_response();
         }
@@ -329,7 +329,7 @@ fn run_task_worker(id: usize, task_path: PathBuf, app: AppState) {
             let mut s = app.state.write().unwrap();
             if let Some(task) = s.tasks.iter_mut().find(|j| j.id == id) {
                 task.state = TaskState::Failed;
-                task.error = Some(err.clone());
+                task.error = Some(err.to_string());
             }
             s.push_event(
                 &app.sse_tx,
@@ -337,7 +337,7 @@ fn run_task_worker(id: usize, task_path: PathBuf, app: AppState) {
                     "type": "finished",
                     "id": id,
                     "success": false,
-                    "error": err,
+                    "error": err.to_string(),
                 }),
             );
             maybe_clear_running(&mut s);
@@ -370,12 +370,7 @@ fn run_task_worker(id: usize, task_path: PathBuf, app: AppState) {
         disk_size: loaded.definition.disk_size.clone(),
         show_progress: false,
     };
-    let result = run_task_blocking_with_progress(
-        &loaded.input_dir,
-        &loaded.output_dir,
-        options,
-        Some(progress_tx),
-    );
+    let result = run_loaded_task_blocking_with_progress(&loaded, options, Some(progress_tx));
     let _ = progress_thread.join();
 
     let elapsed_ms = started_at.elapsed().as_millis() as u64;
@@ -427,7 +422,6 @@ fn forward_progress(id: usize, progress: &RunProgress, app: &AppState) {
     let event = match progress {
         RunProgress::Phase(phase) => {
             let label = match phase {
-                RunPhase::ValidatingPaths => "ValidatingPaths",
                 RunPhase::StartingVm => "StartingVm",
                 RunPhase::PreparingVm => "PreparingVm",
                 RunPhase::RunningScripts => "RunningScripts",

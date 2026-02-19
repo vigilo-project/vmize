@@ -1,5 +1,11 @@
 {
   "name": "runc-oci-bundle",
   "description": "Build and run an OCI container bundle using runc inside the VM",
-  "disk_size": "20G"
+  "disk_size": "20G",
+  "commands": [
+    "00_bootstrap.sh",
+    "10_build_bundle.sh",
+    "20_run_basic.sh",
+    "30_verify.sh"
+  ]
 }

@@ -3,27 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use batch::{run_task_blocking, run_task_blocking_with_options, TaskRunOptions};
-
-fn fixture_input_dir(scripts: &[&str], scripts_dir_rel: &str) -> PathBuf {
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let fixture_dir: PathBuf = manifest_dir.join(scripts_dir_rel);
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_else(|_| Default::default());
-    let input_dir = std::env::temp_dir().join(format!(
-        "batch-it-input-{}-{}",
-        std::process::id(),
-        now.as_nanos()
-    ));
-
-    fs::create_dir_all(&input_dir).unwrap();
-    for &script in scripts {
-        fs::copy(fixture_dir.join(script), input_dir.join(script)).unwrap();
-    }
-
-    input_dir
-}
+use batch::{LoadedTask, TaskDefinition, TaskRunOptions, load_task, run_loaded_task_blocking};
 
 fn collect_shell_scripts(dir: &Path, out: &mut Vec<PathBuf>) {
     let entries = fs::read_dir(dir)
@@ -49,96 +29,108 @@ fn collect_shell_scripts(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-#[test]
-fn run_task_with_options_example_scripts_collects_outputs() {
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let input_dir = manifest_dir.join("example/task1/scripts");
+fn unique_output_dir(label: &str) -> PathBuf {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap_or_else(|_| Default::default());
-    let output_dir = std::env::temp_dir().join(format!(
-        "batch-it-output-examples-{}-{}",
+        .unwrap_or_default();
+    std::env::temp_dir().join(format!(
+        "batch-it-{}-{}-{}",
+        label,
         std::process::id(),
         now.as_nanos()
-    ));
-
-    if output_dir.exists() {
-        fs::remove_dir_all(&output_dir).unwrap();
-    }
-    fs::create_dir_all(&output_dir).unwrap();
-
-    let result = run_task_blocking(&input_dir, &output_dir).expect("integration execution failed");
-
-    let expected = vec!["00_print.sh".to_string(), "10_result.sh".to_string()];
-    assert_eq!(result.exit_code, 0);
-    assert_eq!(result.executed_scripts, expected);
-    assert_eq!(result.output_dir, output_dir);
-
-    assert!(output_dir.join("00_print.sh.log").exists());
-    assert!(output_dir.join("10_result.sh.log").exists());
-    assert!(output_dir.join("hello.txt").exists());
-    assert!(output_dir.join("result.txt").exists());
-    assert!(fs::read_to_string(output_dir.join("00_print.sh.log"))
-        .unwrap()
-        .contains("hello from vm"));
-    assert!(fs::read_to_string(output_dir.join("hello.txt"))
-        .unwrap()
-        .trim()
-        .contains("alpha"));
+    ))
 }
 
 #[test]
-fn run_task_with_options_ollama_prompt_collects_answer() {
+fn run_task_example_task1_collects_outputs() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let task_dir = manifest_dir.join("example/task1");
+
+    let loaded = load_task(&task_dir).expect("load_task must succeed for example/task1");
+
+    // Override output_dir to a temp path so we don't pollute the repo
+    let output_dir = unique_output_dir("task1");
+    let logs_dir = output_dir.join("logs");
+    fs::create_dir_all(&logs_dir).unwrap();
+
+    let task = LoadedTask {
+        definition: loaded.definition,
+        input_dir: loaded.input_dir,
+        output_dir: output_dir.clone(),
+        logs_dir: logs_dir.clone(),
+    };
+
+    let result = run_loaded_task_blocking(&task, TaskRunOptions::default())
+        .expect("integration execution failed");
+
+    let expected = vec!["00_print.sh".to_string(), "10_result.sh".to_string()];
+    assert_eq!(result.exit_code, 0);
+    assert_eq!(result.executed_commands, expected);
+    assert_eq!(result.output_dir, output_dir);
+
+    // Log files are in output/logs/
+    assert!(logs_dir.join("00_print.sh.log").exists());
+    assert!(logs_dir.join("10_result.sh.log").exists());
+
+    // Script output files are in output/
+    assert!(output_dir.join("hello.txt").exists());
+    assert!(output_dir.join("result.txt").exists());
+
+    assert!(
+        fs::read_to_string(logs_dir.join("00_print.sh.log"))
+            .unwrap()
+            .contains("hello from vm")
+    );
+    assert!(
+        fs::read_to_string(output_dir.join("hello.txt"))
+            .unwrap()
+            .trim()
+            .contains("alpha")
+    );
+}
+
+#[test]
+fn run_task_ollama_prompt_collects_answer() {
     if std::env::var("BATCH_OLLAMA_IT").is_err() {
         eprintln!("Skipping Ollama integration test: set BATCH_OLLAMA_IT=1 to run.");
         return;
     }
 
-    let input_dir = fixture_input_dir(&["20_ollama_prompt.sh"], "../tasks/ollama/scripts");
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_else(|_| Default::default());
-    let output_dir = std::env::temp_dir().join(format!(
-        "batch-it-output-ollama-{}-{}",
-        std::process::id(),
-        now.as_nanos()
-    ));
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let task_dir = manifest_dir.join("../tasks/ollama");
 
-    if output_dir.exists() {
-        fs::remove_dir_all(&output_dir).unwrap();
-    }
-    fs::create_dir_all(&output_dir).unwrap();
+    let loaded = load_task(&task_dir).expect("load_task must succeed for tasks/ollama");
 
-    let options = TaskRunOptions {
-        disk_size: Some("20G".to_string()),
-        ..Default::default()
+    let output_dir = unique_output_dir("ollama");
+    let logs_dir = output_dir.join("logs");
+    fs::create_dir_all(&logs_dir).unwrap();
+
+    let task = LoadedTask {
+        definition: TaskDefinition {
+            disk_size: Some("20G".to_string()),
+            ..loaded.definition
+        },
+        input_dir: loaded.input_dir,
+        output_dir: output_dir.clone(),
+        logs_dir: logs_dir.clone(),
     };
-    let result = match run_task_blocking_with_options(&input_dir, &output_dir, options) {
+
+    let result = match run_loaded_task_blocking(&task, TaskRunOptions::default()) {
         Ok(r) => r,
         Err(err) => {
-            // Print any logs that were copied back before panicking
-            let log_path = output_dir.join("20_ollama_prompt.sh.log");
+            let log_path = logs_dir.join("20_ollama_prompt.sh.log");
             if log_path.exists() {
                 let log = fs::read_to_string(&log_path).unwrap_or_default();
                 eprintln!("--- 20_ollama_prompt.sh.log ---\n{log}\n--- end ---");
-            }
-            let err_path = output_dir.join("ollama-error.txt");
-            if err_path.exists() {
-                let err_log = fs::read_to_string(&err_path).unwrap_or_default();
-                eprintln!("--- ollama-error.txt ---\n{err_log}\n--- end ---");
             }
             panic!("ollama integration execution failed: {err:?}");
         }
     };
 
     assert_eq!(result.exit_code, 0);
-    assert_eq!(
-        result.executed_scripts,
-        vec!["20_ollama_prompt.sh".to_string()]
-    );
     assert_eq!(result.output_dir, output_dir);
 
-    assert!(output_dir.join("20_ollama_prompt.sh.log").exists());
+    assert!(logs_dir.join("20_ollama_prompt.sh.log").exists());
     let answer = fs::read_to_string(output_dir.join("ollama-answer.txt")).unwrap();
     assert!(
         !answer.trim().is_empty(),

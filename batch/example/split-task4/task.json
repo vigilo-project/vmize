@@ -1,4 +1,7 @@
 {
   "name": "split-task4",
-  "description": "Background runner loop with graceful stop after 7 seconds"
+  "description": "Tic-tac-toe bot match, logs board state each turn",
+  "commands": [
+    "00_live.sh"
+  ]
 }

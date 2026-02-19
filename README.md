@@ -15,7 +15,7 @@ VM lifecycle runtime: create, connect, copy files, list, and remove Ubuntu cloud
 ### [`batch`](./batch)
 
 Task runner on top of `vm`.
-A **task** is a directory with `task.json`, `scripts/`, and `output/`.
+A **task** is a directory with `task.json`, `input/`, and `output/`.
 
 ### [`dashboard`](./dashboard)
 
@@ -72,7 +72,7 @@ cargo test -p dashboard
 
 # Optional extended paths
 DASHBOARD_IT=1 cargo test --test api run_api_run_task_succeeds -p dashboard -- --nocapture
-BATCH_OLLAMA_IT=1 cargo test run_task_with_options_ollama_prompt_collects_answer --test integration -p batch -- --nocapture
+BATCH_OLLAMA_IT=1 cargo test run_task_ollama_prompt_collects_answer --test integration -p batch -- --nocapture
 
 # Optional browser E2E (separate from `cargo test`)
 (cd dashboard && npm install && npx playwright install chromium && npm run e2e)

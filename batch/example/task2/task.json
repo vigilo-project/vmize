@@ -1,5 +1,8 @@
 {
   "name": "task2-print-only",
   "description": "Print a message with no result script (minimal task)",
-  "disk_size": "20G"
+  "disk_size": "20G",
+  "commands": [
+    "00_print.sh"
+  ]
 }
