@@ -51,6 +51,12 @@ pub fn load_task(task_dir: &Path) -> Result<LoadedTask, String> {
                 cmd_path.display()
             ));
         }
+        if !cmd_path.is_file() {
+            return Err(format!(
+                "Command '{cmd}' is not a file in input: {}",
+                cmd_path.display()
+            ));
+        }
     }
 
     let output_dir = task_dir.join("output");
@@ -186,6 +192,22 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("10_missing.sh"));
+    }
+
+    #[test]
+    fn load_task_fails_if_command_path_is_directory() {
+        let temp = create_task_dir_with_input(
+            r#"{"name": "test", "commands": ["00_run.sh", "10_dir"]}"#,
+            &["00_run.sh"],
+        );
+        fs::create_dir_all(temp.path().join("input").join("10_dir")).unwrap();
+
+        let result = load_task(temp.path());
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("is not a file"));
+        assert!(err.contains("10_dir"));
     }
 
     #[test]
