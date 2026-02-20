@@ -82,7 +82,6 @@ download_with_retry() {
         echo "[*] Download attempt ${attempt}/${DOWNLOAD_ATTEMPTS}: ${url}"
         if wget \
             -q \
-            --show-progress \
             --continue \
             --read-timeout="${DOWNLOAD_READ_TIMEOUT}" \
             --timeout="${DOWNLOAD_TIMEOUT}" \

@@ -1,6 +1,6 @@
 {
   "name": "runc-llama-bundle",
-  "description": "Run Ubuntu minimal OCI via runc, build and run llama.cpp with mounted GGUF model, and export replay bundle",
+  "description": "Run Ubuntu minimal OCI via runc, build and run llama.cpp with mounted GGUF model, then hand off rootfs/config/model to a chained task",
   "disk_size": "20G",
   "commands": [
     "00_bootstrap.sh",
@@ -9,8 +9,9 @@
     "30_verify.sh"
   ],
   "artifacts": [
-    "bundle.env",
-    "llama-answer.txt",
-    "runc-llama-replay.tar.xz"
-  ]
+    "rootfs",
+    "config.json",
+    "model.gguf"
+  ],
+  "next_task_dir": "../runc-llama-mincap"
 }

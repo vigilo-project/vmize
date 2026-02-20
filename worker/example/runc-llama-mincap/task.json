@@ -1,0 +1,13 @@
+{
+  "name": "runc-llama-mincap",
+  "description": "Consume rootfs/config/model artifacts and remove unnecessary Linux capabilities from OCI config",
+  "commands": [
+    "00_bootstrap.sh",
+    "10_minimize_config.sh"
+  ],
+  "artifacts": [
+    "config.min.json",
+    "removed-caps.txt",
+    "cap-summary.txt"
+  ]
+}

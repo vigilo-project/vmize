@@ -46,7 +46,15 @@ cargo build --release
 # Shared tasks
 ./target/release/vmize task example/runc
 ./target/release/vmize task example/runc-llama
+
+# runc-llama chain:
+#   step1: runc-llama (build + prompt run)
+#   step2: runc-llama-mincap (capability minimization)
+./target/release/vmize task worker/example/runc-llama
 ```
+
+`worker/example/runc-llama-mincap` is a downstream task and expects
+`rootfs`, `config.json`, and `model.gguf` artifacts from `runc-llama`.
 
 ## Task Directory Structure
 

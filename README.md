@@ -24,7 +24,7 @@ Tasks can be chained with `next_task_dir`; upstream `artifacts` are handed off a
 
 ### [`worker/example`](./worker/example)
 
-Curated sample tasks (`runc`, `runc-llama`, `ollama`) live here.
+Curated sample tasks (`runc`, `runc-llama`, `runc-llama-mincap`, `ollama`) live here.
 
 ### [`dashboard`](./dashboard)
 
@@ -58,6 +58,8 @@ cargo build --release
 cargo build --release
 ./target/release/vmize task worker/example/task1
 ./target/release/vmize task worker/example/runc-llama
+# `runc-llama` is a chained run:
+# runc-llama -> runc-llama-mincap (minimized config.json)
 ```
 
 ## Quick Start: dashboard

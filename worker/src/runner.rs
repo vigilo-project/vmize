@@ -394,13 +394,29 @@ async fn collect_output_with_ops<V: VmOps + ?Sized>(
         Some(artifacts) if !artifacts.is_empty() => {
             for artifact in artifacts {
                 let remote_path = format!("{}/{}", VM_OUTPUT_DIR, artifact);
-                if let Err(err) = vm_ops.cp_from(vm_id, &remote_path, output_dir_str, false) {
+                let local_path = task.output_dir.join(artifact);
+                if let Ok(metadata) = fs::symlink_metadata(&local_path) {
+                    let remove_result = if metadata.is_dir() {
+                        fs::remove_dir_all(&local_path)
+                    } else {
+                        fs::remove_file(&local_path)
+                    };
+                    if let Err(err) = remove_result {
+                        return Some(Error::Runtime {
+                            message: format!(
+                                "Failed to clear existing artifact {}: {err}",
+                                local_path.display()
+                            ),
+                        });
+                    }
+                }
+
+                if let Err(err) = vm_ops.cp_from(vm_id, &remote_path, output_dir_str, true) {
                     return Some(Error::CopyFromVm {
                         message: err.to_string(),
                     });
                 }
 
-                let local_path = task.output_dir.join(artifact);
                 if !local_path.exists() {
                     return Some(Error::MissingArtifact {
                         file: artifact.clone(),
