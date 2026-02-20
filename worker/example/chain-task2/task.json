@@ -1,0 +1,10 @@
+{
+  "name": "chain-task2-consumer",
+  "description": "Consume handoff artifact from task1",
+  "commands": [
+    "00_consume.sh"
+  ],
+  "artifacts": [
+    "final.txt"
+  ]
+}

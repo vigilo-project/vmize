@@ -37,7 +37,8 @@ example/my-task/
   "description": "optional description",
   "disk_size": "20G",
   "commands": ["00_setup.sh", "10_run.sh"],
-  "artifacts": ["result.txt"]
+  "artifacts": ["result.txt"],
+  "next_task_dir": "../next-task"
 }
 ```
 
@@ -48,6 +49,7 @@ example/my-task/
 | `disk_size` | string | no | VM disk size (e.g. `"20G"`) |
 | `commands` | `string[]` | yes | Files to execute, relative to `input/` |
 | `artifacts` | `string[]` | no | Expected output files in `output/`; if omitted, copies all of `out/` |
+| `next_task_dir` | string | no | Relative path to the next task directory. If set, `artifacts` must be non-empty and are handed off into the next task's `input/` |
 
 ## Module Layout
 
@@ -67,6 +69,8 @@ example/my-task/
 5. Collect logs: `scp /tmp/vmize-worker/logs/* → output/logs/`
 6. Collect output: if `artifacts` specified, copy each individually + verify; otherwise copy all of `/tmp/vmize-worker/out/`
 7. `vm::rm()` → destroy VM
+
+When `next_task_dir` is present, `vmize task` executes a linear chain (`task1 -> task2 -> ...`) and passes the current task's collected `artifacts` into the next task's `input/` via a temporary overlay directory.
 
 Cleanup always runs, even on failure. Errors are combined, not swallowed. Log collection is best-effort (non-fatal).
 

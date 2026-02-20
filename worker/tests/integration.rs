@@ -4,7 +4,7 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use task::{LoadedTask, TaskDefinition, load_task};
-use worker::{TaskRunOptions, run_loaded_task_blocking};
+use worker::{TaskRunOptions, run_loaded_task_blocking, run_task_chain_blocking};
 
 fn collect_shell_scripts(dir: &Path, out: &mut Vec<PathBuf>) {
     let entries = fs::read_dir(dir)
@@ -40,6 +40,36 @@ fn unique_output_dir(label: &str) -> PathBuf {
         std::process::id(),
         now.as_nanos()
     ))
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) {
+    fs::create_dir_all(dst)
+        .unwrap_or_else(|err| panic!("failed to create directory {}: {err}", dst.display()));
+
+    for entry in fs::read_dir(src)
+        .unwrap_or_else(|err| panic!("failed to read directory {}: {err}", src.display()))
+    {
+        let entry = entry.unwrap_or_else(|err| {
+            panic!("failed to read directory entry in {}: {err}", src.display())
+        });
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        let file_type = entry.file_type().unwrap_or_else(|err| {
+            panic!("failed to read file type for {}: {err}", src_path.display())
+        });
+
+        if file_type.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path);
+        } else {
+            fs::copy(&src_path, &dst_path).unwrap_or_else(|err| {
+                panic!(
+                    "failed to copy fixture file {} -> {}: {err}",
+                    src_path.display(),
+                    dst_path.display()
+                )
+            });
+        }
+    }
 }
 
 #[test]
@@ -137,6 +167,43 @@ fn run_task_ollama_prompt_collects_answer() {
         !answer.trim().is_empty(),
         "ollama-answer.txt must not be empty"
     );
+}
+
+#[test]
+fn run_task_chain_example_passes_artifacts_to_next_task() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let fixture_root = manifest_dir.join("example");
+
+    let temp_root = unique_output_dir("chain-fixture");
+    copy_dir_recursive(
+        &fixture_root.join("chain-task1"),
+        &temp_root.join("chain-task1"),
+    );
+    copy_dir_recursive(
+        &fixture_root.join("chain-task2"),
+        &temp_root.join("chain-task2"),
+    );
+
+    let chain_start = temp_root.join("chain-task1");
+    let chain = run_task_chain_blocking(&chain_start, TaskRunOptions::default())
+        .expect("chain execution failed");
+
+    assert_eq!(chain.steps.len(), 2);
+    assert_eq!(
+        chain.steps[0].handoff_artifacts,
+        vec!["handoff.txt".to_string()]
+    );
+
+    let first_output = chain.steps[0].run_result.output_dir.clone();
+    let second_output = chain.steps[1].run_result.output_dir.clone();
+
+    assert!(first_output.join("handoff.txt").exists());
+    assert!(second_output.join("final.txt").exists());
+
+    let final_output = fs::read_to_string(second_output.join("final.txt")).unwrap();
+    assert_eq!(final_output.trim(), "VMIZE-CHAIN");
+
+    let _ = fs::remove_dir_all(&temp_root);
 }
 
 #[test]

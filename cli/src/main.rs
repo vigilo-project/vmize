@@ -3,9 +3,8 @@ use std::process;
 use std::thread;
 
 use clap::{Parser, Subcommand};
-use task::load_task;
 
-use worker::{MAX_BATCH_TASKS, TaskRunOptions, run_loaded_task_blocking};
+use worker::{MAX_BATCH_TASKS, TaskRunOptions, run_task_chain_blocking};
 
 /// VMize CLI — run VM tasks and manage the dashboard
 #[derive(Debug, Parser)]
@@ -60,33 +59,46 @@ fn main() {
 }
 
 fn run_sequential(tasks: &[PathBuf]) {
-    for (idx, task_path) in tasks.iter().enumerate() {
-        let loaded = match load_task(task_path) {
-            Ok(t) => t,
+    for task_path in tasks {
+        eprintln!("[start] {}", task_path.display());
+
+        let chain = match run_task_chain_blocking(task_path, TaskRunOptions::default()) {
+            Ok(result) => result,
             Err(err) => {
-                eprintln!("Failed to load task {}: {err}", task_path.display());
+                eprintln!(
+                    "{}",
+                    format_task_error(&task_path.display().to_string(), err)
+                );
                 process::exit(1);
             }
         };
 
-        let task_name = loaded
-            .definition
-            .name
-            .clone()
-            .unwrap_or_else(|| format!("task-{}", idx + 1));
-        if let Some(desc) = &loaded.definition.description {
-            eprintln!("Running task: {task_name} — {desc}");
-        } else {
-            eprintln!("Running task: {task_name} ({})", task_path.display());
-        }
+        print_chain_steps(&chain);
 
-        let options = TaskRunOptions {
-            disk_size: loaded.definition.disk_size.clone(),
-            ..Default::default()
-        };
-        if let Err(err) = run_loaded_task_blocking(&loaded, options) {
-            eprintln!("{}", format_task_error(&task_name, err));
-            process::exit(1);
+        if let Some(last_step) = chain.steps.last() {
+            eprintln!(
+                "[done]  {} -> {}",
+                task_path.display(),
+                last_step.run_result.output_dir.display()
+            );
+        } else {
+            eprintln!("[done]  {}", task_path.display());
+        }
+    }
+}
+
+fn print_chain_steps(chain: &worker::ChainRunResult) {
+    for (idx, step) in chain.steps.iter().enumerate() {
+        let name = step
+            .task_name
+            .clone()
+            .unwrap_or_else(|| step.task_dir.display().to_string());
+        eprintln!("  step {}: {} ({})", idx + 1, name, step.task_dir.display());
+        if !step.handoff_artifacts.is_empty() {
+            eprintln!(
+                "    handoff artifacts: {}",
+                step.handoff_artifacts.join(", ")
+            );
         }
     }
 }
@@ -106,50 +118,49 @@ fn run_batch(tasks: &[PathBuf]) {
     for (idx, task_path) in tasks.iter().cloned().enumerate() {
         let task_path_for_thread = task_path.clone();
         let thread_name = format!("vmize-task-{idx}");
-        let handle = thread::Builder::new().name(thread_name).spawn(move || -> Result<(), String> {
-            let loaded = load_task(&task_path_for_thread).map_err(|err| {
-                format!(
-                    "failed to load task {}: {err}",
-                    task_path_for_thread.display()
-                )
-            })?;
-            let name = loaded
-                .definition
-                .name
-                .clone()
-                .unwrap_or_else(|| task_path_for_thread.display().to_string());
-            eprintln!("[start] {name}");
-            run_loaded_task_blocking(
-                &loaded,
-                TaskRunOptions {
-                    disk_size: loaded.definition.disk_size.clone(),
-                    ..Default::default()
-                },
-            )
-            .map_err(|e| format_task_error(&name, e))?;
-            eprintln!("[done]  {name} -> {}", loaded.output_dir.display());
-            Ok(())
-        });
+        let handle =
+            thread::Builder::new()
+                .name(thread_name)
+                .spawn(move || -> Result<(), String> {
+                    let name = task_path_for_thread.display().to_string();
+                    eprintln!("[start] {name}");
+                    let chain =
+                        run_task_chain_blocking(&task_path_for_thread, TaskRunOptions::default())
+                            .map_err(|e| format_task_error(&name, e))?;
+                    print_chain_steps(&chain);
+                    if let Some(last_step) = chain.steps.last() {
+                        eprintln!(
+                            "[done]  {name} -> {}",
+                            last_step.run_result.output_dir.display()
+                        );
+                    } else {
+                        eprintln!("[done]  {name}");
+                    }
+                    Ok(())
+                });
 
         match handle {
             Ok(handle) => handles.push(handle),
             Err(err) => {
                 failed += 1;
-                eprintln!("[error] failed to spawn worker thread for {}: {err}", task_path.display());
+                eprintln!(
+                    "[error] failed to spawn worker thread for {}: {err}",
+                    task_path.display()
+                );
             }
         }
     }
 
     let failed = failed
         + handles
-        .into_iter()
-        .filter_map(|h| {
-            h.join()
-                .unwrap_or_else(|_| Err("thread panicked".into()))
-                .err()
-        })
-        .inspect(|e| eprintln!("{e}"))
-        .count();
+            .into_iter()
+            .filter_map(|h| {
+                h.join()
+                    .unwrap_or_else(|_| Err("thread panicked".into()))
+                    .err()
+            })
+            .inspect(|e| eprintln!("{e}"))
+            .count();
 
     if failed > 0 {
         process::exit(1);

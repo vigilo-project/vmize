@@ -28,3 +28,16 @@ impl RunResult {
         }
     }
 }
+
+#[derive(Debug, Clone)]
+pub struct ChainStepResult {
+    pub task_dir: PathBuf,
+    pub task_name: Option<String>,
+    pub handoff_artifacts: Vec<String>,
+    pub run_result: RunResult,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ChainRunResult {
+    pub steps: Vec<ChainStepResult>,
+}

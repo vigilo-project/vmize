@@ -1,0 +1,11 @@
+{
+  "name": "chain-task1-producer",
+  "description": "Produce a handoff artifact and trigger the next task",
+  "commands": [
+    "00_prepare.sh"
+  ],
+  "artifacts": [
+    "handoff.txt"
+  ],
+  "next_task_dir": "../chain-task2"
+}

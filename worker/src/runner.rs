@@ -1,15 +1,20 @@
-use std::path::Path;
+use std::collections::HashSet;
+use std::fs;
+use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::time::Instant;
 
 use crate::vm_ops::{VmOps, VmOptions};
-use crate::{Error, RunResult};
-use task::LoadedTask;
+use crate::{ChainRunResult, ChainStepResult, Error, RunResult};
+use task::{LoadedTask, load_task};
 
 const VM_WORK_DIR: &str = "/tmp/vmize-worker/work";
 const VM_OUTPUT_DIR: &str = "/tmp/vmize-worker/out";
 const VM_LOGS_DIR: &str = "/tmp/vmize-worker/logs";
+static OVERLAY_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+#[derive(Debug, Clone)]
 pub struct TaskRunOptions {
     pub disk_size: Option<String>,
     /// Show vm crate's indicatif progress spinners.
@@ -97,6 +102,96 @@ pub fn run_loaded_task_blocking_with_progress(
     })?;
 
     runtime.block_on(run_loaded_task_with_progress(task, options, progress_tx))
+}
+
+pub fn run_task_chain_blocking(
+    start_task_dir: &Path,
+    options: TaskRunOptions,
+) -> Result<ChainRunResult, Error> {
+    let mut chain_result = ChainRunResult::default();
+    let mut visited = HashSet::new();
+    let mut current_task_dir = fs::canonicalize(start_task_dir).map_err(|err| Error::Runtime {
+        message: format!(
+            "Failed to resolve task directory {}: {err}",
+            start_task_dir.display()
+        ),
+    })?;
+    let mut pending_handoff: Option<Vec<HandoffArtifact>> = None;
+
+    loop {
+        if !visited.insert(current_task_dir.clone()) {
+            return Err(Error::Runtime {
+                message: format!(
+                    "Task chain cycle detected at {}",
+                    current_task_dir.display()
+                ),
+            });
+        }
+
+        let loaded = load_task(&current_task_dir).map_err(|err| Error::Runtime {
+            message: format!("Failed to load task {}: {err}", current_task_dir.display()),
+        })?;
+
+        let mut overlay_input_dir: Option<PathBuf> = None;
+        let task_to_run = if let Some(handoff) = pending_handoff.take() {
+            let overlay = create_overlay_input_dir(&loaded.input_dir, &handoff)?;
+            overlay_input_dir = Some(overlay.clone());
+            LoadedTask {
+                input_dir: overlay,
+                ..loaded.clone()
+            }
+        } else {
+            loaded.clone()
+        };
+
+        let run_result = run_loaded_task_blocking(&task_to_run, options.clone());
+        if let Some(overlay) = overlay_input_dir.as_deref() {
+            let _ = fs::remove_dir_all(overlay);
+        }
+        let run_result = run_result.map_err(|err| Error::Runtime {
+            message: format!("Task chain failed at {}: {err}", current_task_dir.display()),
+        })?;
+
+        let mut handoff_artifacts = Vec::new();
+        let next_task_dir = if let Some(next_task_dir) = loaded.definition.next_task_dir.as_deref()
+        {
+            let artifacts = collect_handoff_artifacts(&loaded)?;
+            handoff_artifacts = artifacts
+                .iter()
+                .map(|artifact| artifact.relative_path.to_string_lossy().to_string())
+                .collect();
+            let next_dir = resolve_next_task_dir(&current_task_dir, next_task_dir)?;
+            pending_handoff = Some(artifacts);
+            Some(next_dir)
+        } else {
+            None
+        };
+
+        chain_result.steps.push(ChainStepResult {
+            task_dir: current_task_dir.clone(),
+            task_name: loaded.definition.name.clone(),
+            handoff_artifacts,
+            run_result,
+        });
+
+        match next_task_dir {
+            Some(next_dir) => {
+                if visited.contains(&next_dir) {
+                    return Err(Error::Runtime {
+                        message: format!(
+                            "Task chain cycle detected: {} -> {}",
+                            current_task_dir.display(),
+                            next_dir.display()
+                        ),
+                    });
+                }
+                current_task_dir = next_dir;
+            }
+            None => break,
+        }
+    }
+
+    Ok(chain_result)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -328,6 +423,194 @@ async fn collect_output_with_ops<V: VmOps + ?Sized>(
     None
 }
 
+#[derive(Debug, Clone)]
+struct HandoffArtifact {
+    relative_path: PathBuf,
+    source_path: PathBuf,
+}
+
+fn collect_handoff_artifacts(task: &LoadedTask) -> Result<Vec<HandoffArtifact>, Error> {
+    let artifacts = task
+        .definition
+        .artifacts
+        .as_ref()
+        .filter(|artifacts| !artifacts.is_empty())
+        .ok_or_else(|| Error::Runtime {
+            message: format!(
+                "Task {} declares next_task_dir but has no artifacts to hand off",
+                task.output_dir
+                    .parent()
+                    .unwrap_or_else(|| Path::new("<unknown>"))
+                    .display()
+            ),
+        })?;
+
+    let mut handoff = Vec::with_capacity(artifacts.len());
+    for artifact in artifacts {
+        let relative_path = parse_artifact_relative_path(artifact)?;
+        let source_path = task.output_dir.join(&relative_path);
+        if !source_path.exists() {
+            return Err(Error::MissingArtifact {
+                file: artifact.clone(),
+            });
+        }
+
+        handoff.push(HandoffArtifact {
+            relative_path,
+            source_path,
+        });
+    }
+
+    Ok(handoff)
+}
+
+fn resolve_next_task_dir(current_task_dir: &Path, next_task_dir: &str) -> Result<PathBuf, Error> {
+    let relative = parse_next_task_relative_path(next_task_dir)?;
+    let candidate = current_task_dir.join(relative);
+    let canonical = fs::canonicalize(&candidate).map_err(|err| Error::Runtime {
+        message: format!(
+            "Failed to resolve next_task_dir '{next_task_dir}' from {}: {err}",
+            current_task_dir.display()
+        ),
+    })?;
+
+    if !canonical.join("task.json").is_file() {
+        return Err(Error::Runtime {
+            message: format!(
+                "Resolved next task directory {} does not contain task.json",
+                canonical.display()
+            ),
+        });
+    }
+
+    Ok(canonical)
+}
+
+fn create_overlay_input_dir(
+    input_dir: &Path,
+    handoff: &[HandoffArtifact],
+) -> Result<PathBuf, Error> {
+    let overlay_dir = next_overlay_input_dir();
+    fs::create_dir_all(&overlay_dir)?;
+
+    let setup_result = (|| -> Result<(), Error> {
+        copy_directory_contents(input_dir, &overlay_dir)?;
+
+        for artifact in handoff {
+            let destination = overlay_dir.join(&artifact.relative_path);
+            if destination.exists() {
+                return Err(Error::Runtime {
+                    message: format!(
+                        "Artifact handoff conflict: {} already exists in downstream input",
+                        destination.display()
+                    ),
+                });
+            }
+
+            copy_path_recursive(&artifact.source_path, &destination)?;
+        }
+
+        Ok(())
+    })();
+
+    if let Err(err) = setup_result {
+        let _ = fs::remove_dir_all(&overlay_dir);
+        return Err(err);
+    }
+
+    Ok(overlay_dir)
+}
+
+fn next_overlay_input_dir() -> PathBuf {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let counter = OVERLAY_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "vmize-chain-input-{}-{}-{}",
+        std::process::id(),
+        now.as_nanos(),
+        counter
+    ))
+}
+
+fn copy_directory_contents(src: &Path, dest: &Path) -> Result<(), Error> {
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let source = entry.path();
+        let destination = dest.join(entry.file_name());
+        copy_path_recursive(&source, &destination)?;
+    }
+    Ok(())
+}
+
+fn copy_path_recursive(src: &Path, dest: &Path) -> Result<(), Error> {
+    let metadata = fs::symlink_metadata(src)?;
+    if metadata.is_dir() {
+        fs::create_dir_all(dest)?;
+        for entry in fs::read_dir(src)? {
+            let entry = entry?;
+            let source_child = entry.path();
+            let dest_child = dest.join(entry.file_name());
+            copy_path_recursive(&source_child, &dest_child)?;
+        }
+        return Ok(());
+    }
+
+    if metadata.is_file() {
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::copy(src, dest)?;
+        return Ok(());
+    }
+
+    Err(Error::Runtime {
+        message: format!("Unsupported artifact type at {}", src.display()),
+    })
+}
+
+fn parse_next_task_relative_path(value: &str) -> Result<PathBuf, Error> {
+    parse_relative_path(value, "next_task_dir", true)
+}
+
+fn parse_artifact_relative_path(value: &str) -> Result<PathBuf, Error> {
+    parse_relative_path(value, "artifact", false)
+}
+
+fn parse_relative_path(value: &str, field: &str, allow_parent: bool) -> Result<PathBuf, Error> {
+    if value.trim().is_empty() {
+        return Err(Error::Runtime {
+            message: format!("{field} path must not be empty"),
+        });
+    }
+
+    let path = Path::new(value);
+    if path.is_absolute() {
+        return Err(Error::Runtime {
+            message: format!("{field} path must be relative: {value}"),
+        });
+    }
+
+    if path.components().any(|component| {
+        !matches!(component, Component::Normal(_) | Component::ParentDir)
+            || (!allow_parent && matches!(component, Component::ParentDir))
+    }) {
+        return Err(Error::Runtime {
+            message: format!(
+                "{field} path must not contain '.', root, or drive-prefix components{}: {value}",
+                if allow_parent {
+                    ""
+                } else {
+                    ", and must not contain '..'"
+                }
+            ),
+        });
+    }
+
+    Ok(path.to_path_buf())
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Helper Functions
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -386,6 +669,7 @@ mod tests {
                 disk_size: None,
                 commands: commands.iter().map(|s| s.to_string()).collect(),
                 artifacts: None,
+                next_task_dir: None,
             },
             input_dir,
             output_dir,
@@ -495,6 +779,85 @@ mod tests {
         let options = TaskRunOptions::default();
         assert!(options.disk_size.is_none());
         assert!(options.show_progress);
+    }
+
+    // ── chain path parsing and handoff ─────────────────────────────────────────
+
+    #[test]
+    fn parse_next_task_relative_path_accepts_nested_relative_paths() {
+        let parsed = parse_next_task_relative_path("next/task2").unwrap();
+        assert_eq!(parsed, PathBuf::from("next/task2"));
+    }
+
+    #[test]
+    fn parse_next_task_relative_path_allows_parent_component() {
+        let parsed = parse_next_task_relative_path("../task2").unwrap();
+        assert_eq!(parsed, PathBuf::from("../task2"));
+    }
+
+    #[test]
+    fn parse_artifact_relative_path_rejects_parent_component() {
+        let err = parse_artifact_relative_path("../handoff.txt").unwrap_err();
+        match err {
+            Error::Runtime { message } => assert!(message.contains("must not contain")),
+            other => panic!("Expected Runtime error, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn create_overlay_input_dir_copies_input_and_handoff_artifacts() {
+        let temp = TempDir::new().unwrap();
+        let input_dir = temp.path().join("input");
+        fs::create_dir_all(&input_dir).unwrap();
+        fs::write(input_dir.join("00_run.sh"), "#!/usr/bin/env bash\n").unwrap();
+        fs::create_dir_all(input_dir.join("assets")).unwrap();
+        fs::write(input_dir.join("assets").join("base.txt"), "base").unwrap();
+
+        let output_dir = temp.path().join("output");
+        fs::create_dir_all(output_dir.join("nested")).unwrap();
+        fs::write(output_dir.join("nested").join("handoff.txt"), "handoff").unwrap();
+
+        let handoff = vec![HandoffArtifact {
+            relative_path: PathBuf::from("nested/handoff.txt"),
+            source_path: output_dir.join("nested").join("handoff.txt"),
+        }];
+
+        let overlay = create_overlay_input_dir(&input_dir, &handoff).unwrap();
+
+        assert!(overlay.join("00_run.sh").exists());
+        assert_eq!(
+            fs::read_to_string(overlay.join("assets").join("base.txt")).unwrap(),
+            "base"
+        );
+        assert_eq!(
+            fs::read_to_string(overlay.join("nested").join("handoff.txt")).unwrap(),
+            "handoff"
+        );
+
+        let _ = fs::remove_dir_all(&overlay);
+    }
+
+    #[test]
+    fn create_overlay_input_dir_fails_on_conflict() {
+        let temp = TempDir::new().unwrap();
+        let input_dir = temp.path().join("input");
+        fs::create_dir_all(&input_dir).unwrap();
+        fs::write(input_dir.join("handoff.txt"), "existing").unwrap();
+
+        let output_dir = temp.path().join("output");
+        fs::create_dir_all(&output_dir).unwrap();
+        fs::write(output_dir.join("handoff.txt"), "new").unwrap();
+
+        let handoff = vec![HandoffArtifact {
+            relative_path: PathBuf::from("handoff.txt"),
+            source_path: output_dir.join("handoff.txt"),
+        }];
+
+        let err = create_overlay_input_dir(&input_dir, &handoff).unwrap_err();
+        match err {
+            Error::Runtime { message } => assert!(message.contains("handoff conflict")),
+            other => panic!("Expected Runtime error, got: {other}"),
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

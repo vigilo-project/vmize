@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -12,6 +12,8 @@ pub struct TaskDefinition {
     pub commands: Vec<String>,
     #[serde(default)]
     pub artifacts: Option<Vec<String>>,
+    #[serde(default)]
+    pub next_task_dir: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -57,6 +59,15 @@ pub fn load_task(task_dir: &Path) -> Result<LoadedTask, String> {
                 cmd_path.display()
             ));
         }
+    }
+
+    if let Some(next_task_dir) = definition.next_task_dir.as_deref() {
+        validate_relative_task_path(next_task_dir).map_err(|message| {
+            format!(
+                "Invalid next_task_dir '{next_task_dir}' in {}: {message}",
+                json_path.display()
+            )
+        })?;
     }
 
     let output_dir = task_dir.join("output");
@@ -144,6 +155,18 @@ mod tests {
             result.definition.artifacts,
             Some(vec!["out.txt".to_string(), "result.tar".to_string()])
         );
+    }
+
+    #[test]
+    fn load_task_parses_next_task_dir_field() {
+        let temp = create_task_dir_with_input(
+            r#"{"commands": [], "artifacts": ["handoff.txt"], "next_task_dir": "task2"}"#,
+            &[],
+        );
+
+        let result = load_task(temp.path()).unwrap();
+
+        assert_eq!(result.definition.next_task_dir, Some("task2".to_string()));
     }
 
     #[test]
@@ -250,4 +273,61 @@ mod tests {
         assert_eq!(result.definition.name, Some("테스트-タスク-🔥".to_string()));
         assert_eq!(result.definition.description, Some("한글 설명".to_string()));
     }
+
+    #[test]
+    fn load_task_fails_if_next_task_dir_is_absolute() {
+        let temp = create_task_dir_with_input(
+            r#"{"commands": [], "artifacts": ["handoff.txt"], "next_task_dir": "/abs/path"}"#,
+            &[],
+        );
+
+        let result = load_task(temp.path());
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("Invalid next_task_dir"));
+        assert!(err.contains("absolute paths are not allowed"));
+    }
+
+    #[test]
+    fn load_task_allows_next_task_dir_with_parent_component() {
+        let temp = create_task_dir_with_input(
+            r#"{"commands": [], "artifacts": ["handoff.txt"], "next_task_dir": "../task2"}"#,
+            &[],
+        );
+
+        let result = load_task(temp.path()).unwrap();
+
+        assert_eq!(
+            result.definition.next_task_dir,
+            Some("../task2".to_string())
+        );
+    }
+}
+
+fn validate_relative_task_path(value: &str) -> Result<(), String> {
+    if value.trim().is_empty() {
+        return Err("must not be empty".to_string());
+    }
+
+    let path = Path::new(value);
+    if path.is_absolute() {
+        return Err("absolute paths are not allowed".to_string());
+    }
+
+    if path
+        .components()
+        .any(|component| matches!(component, Component::RootDir | Component::Prefix(_)))
+    {
+        return Err("must be a relative path (root/drive-prefix is not allowed)".to_string());
+    }
+
+    if path
+        .components()
+        .any(|component| matches!(component, Component::CurDir))
+    {
+        return Err("must not include '.' path components".to_string());
+    }
+
+    Ok(())
 }
