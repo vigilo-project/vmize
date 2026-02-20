@@ -20,6 +20,7 @@ Task definition crate for parsing `task.json` and validating task directories.
 
 Task runner on top of `vm`.
 A **task** is a directory with `task.json`, `input/`, and `output/`.
+Tasks can be chained with `next_task_dir`; upstream `artifacts` are handed off as downstream `input`.
 
 ### [`worker/example`](./worker/example)
 
@@ -27,7 +28,7 @@ Curated sample tasks (`runc`, `runc-llama`, `ollama`) live here.
 
 ### [`dashboard`](./dashboard)
 
-Web control plane for queuing and running `worker` tasks with live progress.
+Web control plane for queuing and running `worker` tasks (including chained tasks) with live progress.
 
 ### [`cli` (`vmize`)](./cli)
 
@@ -77,6 +78,7 @@ cargo test -p dashboard
 
 # Optional extended paths
 DASHBOARD_IT=1 cargo test --test api run_api_run_task_succeeds -p dashboard -- --nocapture
+DASHBOARD_IT=1 cargo test --test api run_api_run_chain_task_succeeds -p dashboard -- --nocapture
 BATCH_OLLAMA_IT=1 cargo test run_task_ollama_prompt_collects_answer --test integration -p worker -- --nocapture
 
 # Optional browser E2E (separate from `cargo test`)

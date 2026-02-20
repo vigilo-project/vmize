@@ -216,6 +216,12 @@
       margin-bottom: 8px;
     }
 
+    .task-chain {
+      color: #79c0ff;
+      font-size: 0.76em;
+      margin-bottom: 6px;
+    }
+
     .task-phase {
       font-size: 0.8em;
       color: #58a6ff;
@@ -364,6 +370,9 @@
             script_index:   j.script_index,
             script_total:   j.script_total,
             current_script: j.current_script,
+            chain_step_index: j.chain_step_index || 0,
+            chain_step_total: j.chain_step_total || 0,
+            chain_current_task: j.chain_current_task || null,
             vm_progress:    Array.from(j.vm_progress_lines || []),
             script_logs:    Array.from(j.script_output_lines || []),
             elapsed_ms:     j.elapsed_ms,
@@ -398,6 +407,7 @@
               id: ev.id, dir: '', name: ev.name, description: ev.description,
               state: 'queued', phase: null,
               script_index: 0, script_total: 0, current_script: null,
+              chain_step_index: 0, chain_step_total: 0, chain_current_task: null,
               vm_progress: [], script_logs: [],
               elapsed_ms: null, error: null, output: null,
             };
@@ -434,6 +444,16 @@
         case 'script_log':
           if (tasks[ev.id]) {
             tasks[ev.id].script_logs.push(ev.line);
+            renderTask(ev.id);
+          }
+          break;
+
+        case 'chain_step':
+          if (tasks[ev.id]) {
+            if (tasks[ev.id].state === 'queued') tasks[ev.id].state = 'running';
+            tasks[ev.id].chain_step_index = ev.step_index;
+            tasks[ev.id].chain_step_total = ev.total_steps;
+            tasks[ev.id].chain_current_task = ev.task_name || null;
             renderTask(ev.id);
           }
           break;
@@ -482,6 +502,11 @@
 
       const stateLabels = { queued: 'QUEUED', running: 'RUNNING', succeeded: 'SUCCESS', failed: 'FAILED' };
       const pct = j.script_total > 0 ? Math.round(j.script_index / j.script_total * 100) : 0;
+      const chainLabel =
+        j.chain_step_total > 1
+          ? 'chain: ' + j.chain_step_index + '/' + j.chain_step_total +
+            (j.chain_current_task ? ' · ' + esc(j.chain_current_task) : '')
+          : '';
 
       const vmProgressHtml = j.vm_progress.length > 0
         ? j.vm_progress.map(l => '<div class="log-line">' + esc(l) + '</div>').join('')
@@ -503,6 +528,7 @@
           '</span>' +
         '</div>' +
         (j.description ? '<div class="task-desc">' + esc(j.description) + '</div>' : '') +
+        (chainLabel ? '<div class="task-chain">' + chainLabel + '</div>' : '') +
         '<div class="task-phase">' + (j.phase ? 'phase: ' + j.phase : (j.state === 'queued' ? 'waiting…' : '')) + '</div>' +
         '<div class="progress-wrap">' +
           '<div class="progress-bar"><div class="progress-fill" style="width:' + pct + '%"></div></div>' +

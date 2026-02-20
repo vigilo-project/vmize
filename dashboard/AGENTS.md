@@ -21,6 +21,7 @@ A dashboard change is complete only when all of these remain true:
 7. Live updates show phase, script progress (`N/M`), recent logs, and elapsed time.
 8. Completion state is explicit: success includes output path; failure includes error.
 9. Browser refresh restores state via `/api/status` and replays recent SSE events.
+10. `next_task_dir` task chains execute step-by-step and expose chain step status in UI + `/api/status`.
 
 ## Acceptance Checklist
 - API paths stay aligned: `/api/tasks`, `/api/tasks/{id}`, `/api/run`, `/api/status`.
@@ -36,6 +37,7 @@ cargo run -p vmize -- dashboard --help
 
 # Optional VM-required path
 DASHBOARD_IT=1 cargo test --test api run_api_run_task_succeeds -p dashboard -- --nocapture
+DASHBOARD_IT=1 cargo test --test api run_api_run_chain_task_succeeds -p dashboard -- --nocapture
 ```
 
 ## Coding & Concurrency Rules

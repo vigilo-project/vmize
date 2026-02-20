@@ -21,7 +21,8 @@ use task::load_task;
 use tokio::sync::broadcast;
 
 use worker::{
-    MAX_BATCH_TASKS, RunPhase, RunProgress, TaskRunOptions, run_loaded_task_blocking_with_progress,
+    ChainStepProgress, MAX_BATCH_TASKS, RunPhase, RunProgress, TaskRunOptions,
+    run_task_chain_blocking_with_progress,
 };
 
 const SSE_REPLAY_CAPACITY: usize = 100;
@@ -56,6 +57,14 @@ enum DashboardSseEvent {
         id: usize,
         line: String,
     },
+    ChainStep {
+        id: usize,
+        step_index: usize,
+        total_steps: usize,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        task_name: Option<String>,
+        task_dir: String,
+    },
     Finished {
         id: usize,
         success: bool,
@@ -84,9 +93,10 @@ fn serialize_and_push_event<T: Serialize>(
     event: T,
 ) -> Option<String> {
     let mut payload = serde_json::to_value(event).ok()?;
-    payload
-        .as_object_mut()?
-        .insert("protocol_version".to_string(), serde_json::json!(DASHBOARD_EVENT_PROTOCOL_VERSION));
+    payload.as_object_mut()?.insert(
+        "protocol_version".to_string(),
+        serde_json::json!(DASHBOARD_EVENT_PROTOCOL_VERSION),
+    );
 
     let data = serde_json::to_string(&payload).ok()?;
     if replay.len() >= SSE_REPLAY_CAPACITY {
@@ -120,6 +130,9 @@ struct TaskEntry {
     script_index: usize,
     script_total: usize,
     current_script: Option<String>,
+    chain_step_index: usize,
+    chain_step_total: usize,
+    chain_current_task: Option<String>,
     vm_progress_lines: Vec<String>,
     script_output_lines: Vec<String>,
     elapsed_ms: Option<u64>,
@@ -297,6 +310,9 @@ async fn add_task(State(app): State<AppState>, Json(req): Json<AddTaskRequest>) 
         script_index: 0,
         script_total: 0,
         current_script: None,
+        chain_step_index: 0,
+        chain_step_total: 0,
+        chain_current_task: None,
         vm_progress_lines: Vec::new(),
         script_output_lines: Vec::new(),
         elapsed_ms: None,
@@ -359,12 +375,23 @@ async fn run_tasks(State(app): State<AppState>) -> Response {
                 .into_response();
         }
 
-        s.running = true;
-        s.tasks
+        let tasks_to_run: Vec<(usize, PathBuf)> = s
+            .tasks
             .iter()
             .filter(|j| j.state == TaskState::Queued)
             .map(|j| (j.id, PathBuf::from(&j.dir)))
-            .collect()
+            .collect();
+
+        if tasks_to_run.is_empty() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "no queued tasks"})),
+            )
+                .into_response();
+        }
+
+        s.running = true;
+        tasks_to_run
     };
 
     let mut started_any = false;
@@ -420,39 +447,19 @@ async fn run_tasks(State(app): State<AppState>) -> Response {
 fn run_task_worker(id: usize, task_path: PathBuf, app: AppState) {
     let started_at = Instant::now();
 
-    let loaded = match load_task(&task_path) {
-        Ok(t) => t,
-        Err(err) => {
-            let mut s = app.state.write().unwrap();
-            if let Some(task) = s.tasks.iter_mut().find(|j| j.id == id) {
-                task.state = TaskState::Failed;
-                task.error = Some(err.to_string());
-            }
-            s.push_event(
-                &app.sse_tx,
-                DashboardSseEvent::Finished {
-                    id,
-                    success: false,
-                    elapsed_ms: None,
-                    output: None,
-                    error: Some(err.to_string()),
-                },
-            );
-            maybe_clear_running(&mut s);
-            return;
-        }
-    };
-
     // Mark running
     {
         let mut s = app.state.write().unwrap();
         if let Some(task) = s.tasks.iter_mut().find(|j| j.id == id) {
             task.state = TaskState::Running;
         }
-        s.push_event(&app.sse_tx, DashboardSseEvent::Phase {
-            id,
-            phase: "StartingVm".to_string(),
-        });
+        s.push_event(
+            &app.sse_tx,
+            DashboardSseEvent::Phase {
+                id,
+                phase: "StartingVm".to_string(),
+            },
+        );
     }
 
     // Progress forwarding thread
@@ -464,22 +471,48 @@ fn run_task_worker(id: usize, task_path: PathBuf, app: AppState) {
         }
     });
 
+    // Chain-step forwarding thread
+    let (chain_step_tx, chain_step_rx) = std::sync::mpsc::channel::<ChainStepProgress>();
+    let app_for_chain = app.clone();
+    let chain_thread = std::thread::spawn(move || {
+        while let Ok(step) = chain_step_rx.recv() {
+            forward_chain_step(id, &step, &app_for_chain);
+        }
+    });
+
     let options = TaskRunOptions {
-        disk_size: loaded.definition.disk_size.clone(),
+        disk_size: None,
         show_progress: false,
     };
-    let result = run_loaded_task_blocking_with_progress(&loaded, options, Some(progress_tx));
+    let result = run_task_chain_blocking_with_progress(
+        &task_path,
+        options,
+        Some(progress_tx),
+        Some(chain_step_tx),
+    );
     let _ = progress_thread.join();
+    let _ = chain_thread.join();
 
     let elapsed_ms = started_at.elapsed().as_millis() as u64;
 
     let mut s = app.state.write().unwrap();
     match result {
-        Ok(_) => {
+        Ok(chain_result) => {
+            let output_path = chain_result
+                .steps
+                .last()
+                .map(|step| step.run_result.output_dir.display().to_string())
+                .unwrap_or_else(|| task_path.join("output").display().to_string());
+            let total_steps = chain_result.steps.len();
             if let Some(task) = s.tasks.iter_mut().find(|j| j.id == id) {
                 task.state = TaskState::Succeeded;
                 task.elapsed_ms = Some(elapsed_ms);
-                task.output = Some(loaded.output_dir.display().to_string());
+                task.output = Some(output_path.clone());
+                task.chain_step_index = total_steps;
+                task.chain_step_total = total_steps;
+                if let Some(last_step) = chain_result.steps.last() {
+                    task.chain_current_task = last_step.task_name.clone();
+                }
             }
             s.push_event(
                 &app.sse_tx,
@@ -487,7 +520,7 @@ fn run_task_worker(id: usize, task_path: PathBuf, app: AppState) {
                     id,
                     success: true,
                     elapsed_ms: Some(elapsed_ms),
-                    output: Some(loaded.output_dir.display().to_string()),
+                    output: Some(output_path),
                     error: None,
                 },
             );
@@ -590,6 +623,37 @@ fn forward_progress(id: usize, progress: &RunProgress, app: &AppState) {
     s.push_event(&app.sse_tx, event);
 }
 
+fn forward_chain_step(id: usize, step: &ChainStepProgress, app: &AppState) {
+    let mut s = app.state.write().unwrap();
+
+    match step {
+        ChainStepProgress::StepStarted {
+            step_index,
+            total_steps,
+            task_dir,
+            task_name,
+        } => {
+            let phase = format!("ChainStep {step_index}/{total_steps}");
+            if let Some(task) = s.tasks.iter_mut().find(|j| j.id == id) {
+                task.chain_step_index = *step_index;
+                task.chain_step_total = *total_steps;
+                task.chain_current_task = task_name.clone();
+                task.phase = Some(phase);
+            }
+            s.push_event(
+                &app.sse_tx,
+                DashboardSseEvent::ChainStep {
+                    id,
+                    step_index: *step_index,
+                    total_steps: *total_steps,
+                    task_name: task_name.clone(),
+                    task_dir: task_dir.display().to_string(),
+                },
+            );
+        }
+    }
+}
+
 fn maybe_clear_running(s: &mut DashboardState) {
     let all_done = s
         .tasks
@@ -668,6 +732,9 @@ mod tests {
             script_index: 0,
             script_total: 0,
             current_script: None,
+            chain_step_index: 0,
+            chain_step_total: 0,
+            chain_current_task: None,
             vm_progress_lines: Vec::new(),
             script_output_lines: Vec::new(),
             elapsed_ms: None,
@@ -759,16 +826,46 @@ mod tests {
             s.tasks.push(make_task(0, TaskState::Running));
         }
 
-        forward_progress(
-            0,
-            &RunProgress::Phase(RunPhase::StartingVm),
-            &app,
-        );
+        forward_progress(0, &RunProgress::Phase(RunPhase::StartingVm), &app);
 
         let evt: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
         assert_eq!(evt["type"], "phase");
         assert_eq!(evt["id"], 0);
         assert_eq!(evt["protocol_version"], 1);
+    }
+
+    #[test]
+    fn forward_chain_step_updates_task_and_broadcasts_event() {
+        let (app, mut rx) = make_app();
+        {
+            let mut s = app.state.write().unwrap();
+            s.tasks.push(make_task(0, TaskState::Running));
+        }
+
+        forward_chain_step(
+            0,
+            &ChainStepProgress::StepStarted {
+                step_index: 2,
+                total_steps: 3,
+                task_dir: PathBuf::from("/tmp/task-2"),
+                task_name: Some("task-two".to_string()),
+            },
+            &app,
+        );
+
+        let s = app.state.read().unwrap();
+        assert_eq!(s.tasks[0].chain_step_index, 2);
+        assert_eq!(s.tasks[0].chain_step_total, 3);
+        assert_eq!(s.tasks[0].chain_current_task, Some("task-two".to_string()));
+        assert_eq!(s.tasks[0].phase, Some("ChainStep 2/3".to_string()));
+
+        let evt: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+        assert_eq!(evt["type"], "chain_step");
+        assert_eq!(evt["id"], 0);
+        assert_eq!(evt["step_index"], 2);
+        assert_eq!(evt["total_steps"], 3);
+        assert_eq!(evt["task_name"], "task-two");
+        assert_eq!(evt["task_dir"], "/tmp/task-2");
     }
 
     // ── maybe_clear_running ───────────────────────────────────────────────────

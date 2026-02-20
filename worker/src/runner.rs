@@ -62,6 +62,16 @@ pub enum RunProgress {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChainStepProgress {
+    StepStarted {
+        step_index: usize,
+        total_steps: usize,
+        task_dir: PathBuf,
+        task_name: Option<String>,
+    },
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Public API (uses RealVmOps by default)
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -108,31 +118,37 @@ pub fn run_task_chain_blocking(
     start_task_dir: &Path,
     options: TaskRunOptions,
 ) -> Result<ChainRunResult, Error> {
+    run_task_chain_blocking_with_progress(start_task_dir, options, None, None)
+}
+
+pub fn run_task_chain_blocking_with_progress(
+    start_task_dir: &Path,
+    options: TaskRunOptions,
+    progress_tx: Option<mpsc::Sender<RunProgress>>,
+    chain_step_tx: Option<mpsc::Sender<ChainStepProgress>>,
+) -> Result<ChainRunResult, Error> {
+    let chain_steps = resolve_chain_steps(start_task_dir)?;
+    let total_steps = chain_steps.len();
+
     let mut chain_result = ChainRunResult::default();
-    let mut visited = HashSet::new();
-    let mut current_task_dir = fs::canonicalize(start_task_dir).map_err(|err| Error::Runtime {
-        message: format!(
-            "Failed to resolve task directory {}: {err}",
-            start_task_dir.display()
-        ),
-    })?;
     let mut pending_handoff: Option<Vec<HandoffArtifact>> = None;
 
-    loop {
-        if !visited.insert(current_task_dir.clone()) {
-            return Err(Error::Runtime {
-                message: format!(
-                    "Task chain cycle detected at {}",
-                    current_task_dir.display()
-                ),
-            });
-        }
+    for (step_idx, chain_step) in chain_steps.into_iter().enumerate() {
+        let step_index = step_idx + 1;
+        send_chain_step(
+            &chain_step_tx,
+            ChainStepProgress::StepStarted {
+                step_index,
+                total_steps,
+                task_dir: chain_step.task_dir.clone(),
+                task_name: chain_step.loaded.definition.name.clone(),
+            },
+        );
 
-        let loaded = load_task(&current_task_dir).map_err(|err| Error::Runtime {
-            message: format!("Failed to load task {}: {err}", current_task_dir.display()),
-        })?;
+        let loaded = chain_step.loaded;
+        let current_task_dir = chain_step.task_dir;
 
-        let mut overlay_input_dir: Option<PathBuf> = None;
+        let mut overlay_input_dir = None;
         let task_to_run = if let Some(handoff) = pending_handoff.take() {
             let overlay = create_overlay_input_dir(&loaded.input_dir, &handoff)?;
             overlay_input_dir = Some(overlay.clone());
@@ -144,7 +160,11 @@ pub fn run_task_chain_blocking(
             loaded.clone()
         };
 
-        let run_result = run_loaded_task_blocking(&task_to_run, options.clone());
+        let run_result = run_loaded_task_blocking_with_progress(
+            &task_to_run,
+            options.clone(),
+            progress_tx.clone(),
+        );
         if let Some(overlay) = overlay_input_dir.as_deref() {
             let _ = fs::remove_dir_all(overlay);
         }
@@ -153,19 +173,16 @@ pub fn run_task_chain_blocking(
         })?;
 
         let mut handoff_artifacts = Vec::new();
-        let next_task_dir = if let Some(next_task_dir) = loaded.definition.next_task_dir.as_deref()
-        {
+        if loaded.definition.next_task_dir.is_some() {
             let artifacts = collect_handoff_artifacts(&loaded)?;
             handoff_artifacts = artifacts
                 .iter()
                 .map(|artifact| artifact.relative_path.to_string_lossy().to_string())
                 .collect();
-            let next_dir = resolve_next_task_dir(&current_task_dir, next_task_dir)?;
             pending_handoff = Some(artifacts);
-            Some(next_dir)
         } else {
-            None
-        };
+            pending_handoff = None;
+        }
 
         chain_result.steps.push(ChainStepResult {
             task_dir: current_task_dir.clone(),
@@ -173,22 +190,6 @@ pub fn run_task_chain_blocking(
             handoff_artifacts,
             run_result,
         });
-
-        match next_task_dir {
-            Some(next_dir) => {
-                if visited.contains(&next_dir) {
-                    return Err(Error::Runtime {
-                        message: format!(
-                            "Task chain cycle detected: {} -> {}",
-                            current_task_dir.display(),
-                            next_dir.display()
-                        ),
-                    });
-                }
-                current_task_dir = next_dir;
-            }
-            None => break,
-        }
     }
 
     Ok(chain_result)
@@ -429,6 +430,54 @@ struct HandoffArtifact {
     source_path: PathBuf,
 }
 
+#[derive(Debug, Clone)]
+struct ChainStepPlan {
+    task_dir: PathBuf,
+    loaded: LoadedTask,
+}
+
+fn resolve_chain_steps(start_task_dir: &Path) -> Result<Vec<ChainStepPlan>, Error> {
+    let mut visited = HashSet::new();
+    let mut current_task_dir = fs::canonicalize(start_task_dir).map_err(|err| Error::Runtime {
+        message: format!(
+            "Failed to resolve task directory {}: {err}",
+            start_task_dir.display()
+        ),
+    })?;
+    let mut steps = Vec::new();
+
+    loop {
+        if !visited.insert(current_task_dir.clone()) {
+            return Err(Error::Runtime {
+                message: format!(
+                    "Task chain cycle detected at {}",
+                    current_task_dir.display()
+                ),
+            });
+        }
+
+        let loaded = load_task(&current_task_dir).map_err(|err| Error::Runtime {
+            message: format!("Failed to load task {}: {err}", current_task_dir.display()),
+        })?;
+
+        let next_task_dir = loaded.definition.next_task_dir.clone();
+        steps.push(ChainStepPlan {
+            task_dir: current_task_dir.clone(),
+            loaded,
+        });
+
+        match next_task_dir {
+            Some(next_task_dir) => {
+                let next_dir = resolve_next_task_dir(&current_task_dir, &next_task_dir)?;
+                current_task_dir = next_dir;
+            }
+            None => break,
+        }
+    }
+
+    Ok(steps)
+}
+
 fn collect_handoff_artifacts(task: &LoadedTask) -> Result<Vec<HandoffArtifact>, Error> {
     let artifacts = task
         .definition
@@ -609,6 +658,15 @@ fn parse_relative_path(value: &str, field: &str, allow_parent: bool) -> Result<P
     }
 
     Ok(path.to_path_buf())
+}
+
+fn send_chain_step(
+    chain_step_tx: &Option<mpsc::Sender<ChainStepProgress>>,
+    event: ChainStepProgress,
+) {
+    if let Some(tx) = chain_step_tx {
+        let _ = tx.send(event);
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -856,6 +914,53 @@ mod tests {
         let err = create_overlay_input_dir(&input_dir, &handoff).unwrap_err();
         match err {
             Error::Runtime { message } => assert!(message.contains("handoff conflict")),
+            other => panic!("Expected Runtime error, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn resolve_chain_steps_expands_linear_chain() {
+        let temp = TempDir::new().unwrap();
+        let task1 = temp.path().join("task1");
+        let task2 = temp.path().join("task2");
+        fs::create_dir_all(task1.join("input")).unwrap();
+        fs::create_dir_all(task2.join("input")).unwrap();
+        fs::write(
+            task1.join("task.json"),
+            r#"{"name":"one","commands":[],"next_task_dir":"../task2"}"#,
+        )
+        .unwrap();
+        fs::write(task2.join("task.json"), r#"{"name":"two","commands":[]}"#).unwrap();
+
+        let steps = resolve_chain_steps(&task1).unwrap();
+
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[0].loaded.definition.name.as_deref(), Some("one"));
+        assert_eq!(steps[1].loaded.definition.name.as_deref(), Some("two"));
+    }
+
+    #[test]
+    fn resolve_chain_steps_rejects_cycle() {
+        let temp = TempDir::new().unwrap();
+        let task1 = temp.path().join("task1");
+        let task2 = temp.path().join("task2");
+        fs::create_dir_all(task1.join("input")).unwrap();
+        fs::create_dir_all(task2.join("input")).unwrap();
+        fs::write(
+            task1.join("task.json"),
+            r#"{"commands":[],"next_task_dir":"../task2"}"#,
+        )
+        .unwrap();
+        fs::write(
+            task2.join("task.json"),
+            r#"{"commands":[],"next_task_dir":"../task1"}"#,
+        )
+        .unwrap();
+
+        let err = resolve_chain_steps(&task1).unwrap_err();
+
+        match err {
+            Error::Runtime { message } => assert!(message.contains("cycle")),
             other => panic!("Expected Runtime error, got: {other}"),
         }
     }

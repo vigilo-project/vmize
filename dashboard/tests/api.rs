@@ -9,6 +9,7 @@
 
 use std::path::Path;
 use std::time::{Duration, Instant};
+use std::{env, fs};
 
 use reqwest::blocking::Client;
 use tokio::task::JoinHandle;
@@ -20,6 +21,15 @@ fn example_task_dir() -> String {
         .join("../worker/example/task1")
         .canonicalize()
         .expect("worker/example/task1 must exist")
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn example_chain_task_dir() -> String {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../worker/example/chain-task1")
+        .canonicalize()
+        .expect("worker/example/chain-task1 must exist")
         .to_string_lossy()
         .into_owned()
 }
@@ -418,6 +428,76 @@ fn run_api_run_task_succeeds() {
             }
             "failed" => {
                 panic!("task failed: {}", task["error"]);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Full end-to-end test for chained tasks:
+/// adds chain-task1 (which points to chain-task2), runs it, waits for completion,
+/// verifies chain step fields and final output artifact from the last task.
+/// Skipped unless `DASHBOARD_IT=1` is set (requires QEMU).
+#[test]
+fn run_api_run_chain_task_succeeds() {
+    if env::var("DASHBOARD_IT").is_err() {
+        eprintln!("Skipping VM chain end-to-end test: set DASHBOARD_IT=1 to run.");
+        return;
+    }
+
+    let server = TestServer::start();
+    let client = server.client();
+
+    client
+        .post(server.url("/api/tasks"))
+        .json(&serde_json::json!({"dir": example_chain_task_dir()}))
+        .send()
+        .unwrap();
+
+    client.post(server.url("/api/run")).send().unwrap();
+
+    // Poll status until task is no longer running (max 5 min).
+    let deadline = Instant::now() + Duration::from_secs(300);
+    loop {
+        assert!(
+            Instant::now() < deadline,
+            "chain task did not complete within 5 min"
+        );
+        std::thread::sleep(Duration::from_secs(5));
+
+        let status: serde_json::Value = client
+            .get(server.url("/api/status"))
+            .send()
+            .unwrap()
+            .json()
+            .unwrap();
+
+        let task = &status["tasks"][0];
+        let state = task["state"].as_str().unwrap_or("unknown");
+        eprintln!(
+            "state={state} chain={}/{} phase={}",
+            task["chain_step_index"], task["chain_step_total"], task["phase"]
+        );
+
+        match state {
+            "succeeded" => {
+                assert_eq!(task["chain_step_total"], 2, "must report two chain steps");
+                assert_eq!(
+                    task["chain_step_index"], 2,
+                    "must finish at final chain step"
+                );
+                let output = task["output"]
+                    .as_str()
+                    .expect("succeeded chain task must have output path");
+                let final_file = Path::new(output).join("final.txt");
+                assert!(final_file.exists(), "expected {}", final_file.display());
+                let final_text = fs::read_to_string(&final_file)
+                    .unwrap_or_else(|err| panic!("failed to read {}: {err}", final_file.display()));
+                assert_eq!(final_text.trim(), "VMIZE-CHAIN");
+                break;
+            }
+            "failed" => {
+                panic!("chain task failed: {}", task["error"]);
             }
             _ => {}
         }

@@ -15,6 +15,7 @@ The MVP is complete only when all of these pass end-to-end in a browser:
 7. Show live phase/script/log updates.
 8. Show explicit success/failure completion state.
 9. Restore current state and replay recent events after refresh.
+10. If a task declares `next_task_dir`, execute the chain linearly and show chain step progress in the task card.
 
 ## Acceptance Checklist
 - `GET /api/status` returns `tasks` + `running`.
@@ -42,6 +43,11 @@ Open `http://localhost:8080`.
 | `DELETE` | `/api/tasks/{id}` | Remove queued task |
 | `POST` | `/api/run` | Start queued tasks |
 
+For chained tasks, `/api/status` task entries include:
+- `chain_step_index`
+- `chain_step_total`
+- `chain_current_task`
+
 ## Verification Commands
 
 ```bash
@@ -50,6 +56,7 @@ cargo test -p dashboard --test api
 
 # Optional VM-required path
 DASHBOARD_IT=1 cargo test --test api run_api_run_task_succeeds -p dashboard -- --nocapture
+DASHBOARD_IT=1 cargo test --test api run_api_run_chain_task_succeeds -p dashboard -- --nocapture
 ```
 
 `cargo test` does not run browser Playwright tests.
