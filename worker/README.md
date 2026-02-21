@@ -10,6 +10,7 @@ Built on top of [`vm`](https://github.com/vigilo-project/vm), `worker` defines a
 - `output/` — collected output files and per-command logs
 
 Shared curated tasks in this workspace live in `./example/`.
+For chain-oriented development notes and change history, see [`TASK_CHAIN_TUTORIAL.md`](./TASK_CHAIN_TUTORIAL.md).
 
 ## Minimum Goal
 `worker` is considered healthy when it can:
@@ -45,16 +46,16 @@ cargo build --release
 
 # Shared tasks
 ./target/release/vmize task example/runc
-./target/release/vmize task example/runc-llama
+./target/release/vmize task example/runc-llama-build
 
 # runc-llama Task Chain:
-#   step1: runc-llama (build + prompt run)
-#   step2: runc-llama-mincap (capability minimization)
-./target/release/vmize task worker/example/runc-llama
+#   step1: runc-llama-build (HTTP prompt flow)
+#   step2: runc-llama-hardened (hardened config for UDS-oriented stage)
+./target/release/vmize task worker/example/runc-llama-build
 ```
 
-`worker/example/runc-llama-mincap` is a downstream task and expects
-`rootfs`, `config.json`, and `model.gguf` artifacts from `runc-llama`.
+`worker/example/runc-llama-hardened` is a downstream task and expects
+`rootfs`, `config.json`, and `model.gguf` artifacts from `runc-llama-build`.
 
 ## Task Directory Structure
 

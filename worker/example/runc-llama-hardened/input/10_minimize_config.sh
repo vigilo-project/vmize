@@ -11,6 +11,9 @@ INPUT_MODEL="${WORK_DIR}/model.gguf"
 OUTPUT_CONFIG="${OUT_DIR}/config.min.json"
 OUTPUT_REMOVED="${OUT_DIR}/removed-caps.txt"
 OUTPUT_SUMMARY="${OUT_DIR}/cap-summary.txt"
+OUTPUT_ANSWER="${OUT_DIR}/llama-answer.txt"
+OUTPUT_ERROR="${OUT_DIR}/llama-error.txt"
+PROMPT_TEXT="${LLAMA_PROMPT:-Say in one short sentence that hardened runc llama stage works.}"
 
 command -v jq >/dev/null 2>&1 || { echo "[ERROR] jq not found"; exit 1; }
 
@@ -21,6 +24,11 @@ fi
 
 if [[ ! -x "${INPUT_ROOTFS}/opt/llama.cpp/build/bin/llama-cli" ]]; then
     echo "[ERROR] rootfs handoff is missing llama-cli binary"
+    exit 1
+fi
+
+if [[ ! -e "${INPUT_ROOTFS}/opt/llama.cpp/build/bin/libllama.so.0" ]]; then
+    echo "[ERROR] rootfs handoff is missing libllama.so.0"
     exit 1
 fi
 
@@ -79,5 +87,36 @@ printf '%s\n' "${DROP_CAPS[@]}" > "${OUTPUT_REMOVED}"
     echo "effective_after=$(jq '.process.capabilities.effective | length' "${OUTPUT_CONFIG}")"
     echo "permitted_after=$(jq '.process.capabilities.permitted | length' "${OUTPUT_CONFIG}")"
 } > "${OUTPUT_SUMMARY}"
+
+RUNTIME_LD_LIBRARY_PATH="${INPUT_ROOTFS}/opt/llama.cpp/build/bin:${INPUT_ROOTFS}/usr/lib/aarch64-linux-gnu:${INPUT_ROOTFS}/lib/aarch64-linux-gnu:${INPUT_ROOTFS}/usr/lib:${INPUT_ROOTFS}/lib"
+if [[ -n "${LD_LIBRARY_PATH:-}" ]]; then
+    RUNTIME_LD_LIBRARY_PATH="${RUNTIME_LD_LIBRARY_PATH}:${LD_LIBRARY_PATH}"
+fi
+
+set +e
+env LD_LIBRARY_PATH="${RUNTIME_LD_LIBRARY_PATH}" \
+    "${INPUT_ROOTFS}/opt/llama.cpp/build/bin/llama-cli" \
+    -m "${INPUT_MODEL}" \
+    -p "${PROMPT_TEXT}" \
+    -n 48 \
+    --temp 0.2 \
+    --seed 42 \
+    --single-turn \
+    --simple-io \
+    > "${OUTPUT_ANSWER}" \
+    2> "${OUTPUT_ERROR}"
+llama_status=$?
+set -e
+
+if [[ ${llama_status} -ne 0 ]] || ! grep -q '[[:alnum:]]' "${OUTPUT_ANSWER}"; then
+    echo "[ERROR] hardened direct llama run failed (exit=${llama_status})"
+    if [[ -s "${OUTPUT_ERROR}" ]]; then
+        cat "${OUTPUT_ERROR}" >&2
+    fi
+    exit 1
+fi
+
+echo "llama_hardened_prompt=direct_success" >> "${OUTPUT_SUMMARY}"
+echo "llama_hardened_exit=${llama_status}" >> "${OUTPUT_SUMMARY}"
 
 echo "[+] Minimized OCI config written to ${OUTPUT_CONFIG}"

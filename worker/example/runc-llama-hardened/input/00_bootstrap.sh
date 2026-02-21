@@ -13,6 +13,6 @@ if ! command -v apt-get >/dev/null 2>&1; then
 fi
 
 ${SUDO} apt-get update
-${SUDO} apt-get install -y --no-install-recommends jq
+${SUDO} apt-get install -y --no-install-recommends jq libgomp1 libstdc++6
 
-echo "[+] runc-llama-mincap bootstrap complete"
+echo "[+] runc-llama-hardened bootstrap complete"

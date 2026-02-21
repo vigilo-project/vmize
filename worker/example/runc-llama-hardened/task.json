@@ -1,0 +1,14 @@
+{
+  "name": "runc-llama-hardened",
+  "description": "Consume rootfs/config/model artifacts, produce hardened OCI config for UDS-only communication, and prepare capability-minimized runtime settings",
+  "commands": [
+    "00_bootstrap.sh",
+    "10_minimize_config.sh"
+  ],
+  "artifacts": [
+    "config.min.json",
+    "removed-caps.txt",
+    "cap-summary.txt",
+    "llama-answer.txt"
+  ]
+}

@@ -54,8 +54,8 @@ jq empty "${CONFIG_PATH}" >/dev/null
 echo "[*] Staging artifacts for chained task"
 rm -rf "${HANDOFF_ROOTFS}"
 mkdir -p "${HANDOFF_ROOTFS}/opt/llama.cpp/build/bin"
-cp "${ROOTFS_DIR}/opt/llama.cpp/build/bin/llama-cli" \
-   "${HANDOFF_ROOTFS}/opt/llama.cpp/build/bin/llama-cli"
+cp -a "${ROOTFS_DIR}/opt/llama.cpp/build/bin/." \
+      "${HANDOFF_ROOTFS}/opt/llama.cpp/build/bin/"
 printf '%s\n' "${ROOTFS_DIR}" > "${HANDOFF_ROOTFS}/ROOTFS_SOURCE.txt"
 
 cp "${CONFIG_PATH}" "${HANDOFF_CONFIG}"
@@ -63,6 +63,11 @@ cp "${MODEL_PATH}" "${HANDOFF_MODEL}"
 
 if [[ ! -x "${HANDOFF_ROOTFS}/opt/llama.cpp/build/bin/llama-cli" ]]; then
     echo "[ERROR] handoff rootfs is missing /opt/llama.cpp/build/bin/llama-cli"
+    exit 1
+fi
+
+if [[ ! -e "${HANDOFF_ROOTFS}/opt/llama.cpp/build/bin/libllama.so.0" ]]; then
+    echo "[ERROR] handoff rootfs is missing /opt/llama.cpp/build/bin/libllama.so.0"
     exit 1
 fi
 
