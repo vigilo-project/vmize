@@ -393,8 +393,12 @@ async fn collect_output_with_ops<V: VmOps + ?Sized>(
     match &task.definition.artifacts {
         Some(artifacts) if !artifacts.is_empty() => {
             for artifact in artifacts {
-                let remote_path = format!("{}/{}", VM_OUTPUT_DIR, artifact);
-                let local_path = task.output_dir.join(artifact);
+                let relative_path = match parse_artifact_relative_path(artifact) {
+                    Ok(path) => path,
+                    Err(err) => return Some(err),
+                };
+                let remote_path = format!("{}/{}", VM_OUTPUT_DIR, relative_path.to_string_lossy());
+                let local_path = task.output_dir.join(&relative_path);
                 if let Ok(metadata) = fs::symlink_metadata(&local_path) {
                     let remove_result = if metadata.is_dir() {
                         fs::remove_dir_all(&local_path)
@@ -720,7 +724,9 @@ mod tests {
     use super::*;
     use crate::vm_ops::MockVmOps;
     use std::fs;
+    use std::path::Path;
     use std::path::PathBuf;
+    use std::sync::Mutex;
     use task::TaskDefinition;
     use tempfile::TempDir;
 
@@ -750,6 +756,85 @@ mod tests {
             logs_dir,
         };
         (temp, task)
+    }
+
+    #[derive(Default)]
+    struct CopyingVmOps {
+        cp_from_calls: Mutex<Vec<(String, String, bool)>>,
+    }
+
+    impl CopyingVmOps {
+        fn cp_from_calls(&self) -> Vec<(String, String, bool)> {
+            self.cp_from_calls.lock().unwrap().clone()
+        }
+    }
+
+    impl VmOps for CopyingVmOps {
+        async fn run(&self, _options: crate::vm_ops::VmOptions) -> anyhow::Result<vm::VmRecord> {
+            unreachable!("run() is not used in collect_output_with_ops tests")
+        }
+
+        async fn ssh(&self, _vm_id: &str, _command: &str) -> anyhow::Result<String> {
+            unreachable!("ssh() is not used in collect_output_with_ops tests")
+        }
+
+        fn cp_to(
+            &self,
+            _vm_id: &str,
+            _local: &str,
+            _remote: &str,
+            _recursive: bool,
+        ) -> anyhow::Result<()> {
+            unreachable!("cp_to() is not used in collect_output_with_ops tests")
+        }
+
+        fn cp_from(
+            &self,
+            _vm_id: &str,
+            remote: &str,
+            local: &str,
+            recursive: bool,
+        ) -> anyhow::Result<()> {
+            self.cp_from_calls.lock().unwrap().push((
+                remote.to_string(),
+                local.to_string(),
+                recursive,
+            ));
+
+            if let Some(relative) = remote.strip_prefix(&format!("{}/", VM_OUTPUT_DIR)) {
+                let destination = Path::new(local).join(relative);
+                if relative.contains('.') {
+                    if let Some(parent) = destination.parent() {
+                        fs::create_dir_all(parent)?;
+                    }
+                    fs::write(&destination, format!("copied:{relative}"))?;
+                } else {
+                    fs::create_dir_all(&destination)?;
+                    fs::write(
+                        destination.join("copied.marker"),
+                        format!("copied:{relative}"),
+                    )?;
+                }
+            }
+
+            Ok(())
+        }
+
+        fn rm(&self, _vm_id: &str) -> anyhow::Result<()> {
+            unreachable!("rm() is not used in collect_output_with_ops tests")
+        }
+
+        fn ssh_stream<F>(
+            &self,
+            _record: &vm::VmRecord,
+            _command: &str,
+            _on_line: F,
+        ) -> anyhow::Result<()>
+        where
+            F: FnMut(String) + Send,
+        {
+            unreachable!("ssh_stream() is not used in collect_output_with_ops tests")
+        }
     }
 
     // ── shell_quote ────────────────────────────────────────────────────────────
@@ -932,6 +1017,83 @@ mod tests {
             Error::Runtime { message } => assert!(message.contains("handoff conflict")),
             other => panic!("Expected Runtime error, got: {other}"),
         }
+    }
+
+    #[test]
+    fn collect_output_with_ops_replaces_existing_file_and_directory_artifacts() {
+        let (_temp, mut task) = create_test_loaded_task(&[]);
+        task.definition.artifacts = Some(vec!["artifact.txt".to_string(), "rootfs".to_string()]);
+
+        let stale_file = task.output_dir.join("artifact.txt");
+        fs::write(&stale_file, "stale").unwrap();
+        let stale_dir = task.output_dir.join("rootfs");
+        fs::create_dir_all(&stale_dir).unwrap();
+        fs::write(stale_dir.join("old.txt"), "old").unwrap();
+
+        let vm_ops = CopyingVmOps::default();
+        let mut result = RunResult::new("vm0", &task.output_dir, &task.logs_dir);
+        let run_error = None;
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let collect_error = rt.block_on(collect_output_with_ops(
+            &vm_ops,
+            "vm0",
+            &task,
+            &mut result,
+            &run_error,
+        ));
+
+        assert!(collect_error.is_none());
+        assert_eq!(
+            fs::read_to_string(&stale_file).unwrap(),
+            "copied:artifact.txt"
+        );
+        assert!(!stale_dir.join("old.txt").exists());
+        assert!(stale_dir.join("copied.marker").exists());
+        assert_eq!(
+            result.collected_artifacts,
+            vec!["artifact.txt".to_string(), "rootfs".to_string()]
+        );
+
+        let calls = vm_ops.cp_from_calls();
+        assert!(calls.iter().any(|(remote, _, recursive)| {
+            remote == &format!("{}/artifact.txt", VM_OUTPUT_DIR) && *recursive
+        }));
+        assert!(calls.iter().any(|(remote, _, recursive)| {
+            remote == &format!("{}/rootfs", VM_OUTPUT_DIR) && *recursive
+        }));
+    }
+
+    #[test]
+    fn collect_output_with_ops_rejects_invalid_artifact_path_before_copying_artifact() {
+        let (_temp, mut task) = create_test_loaded_task(&[]);
+        task.definition.artifacts = Some(vec!["../escape.txt".to_string()]);
+
+        let vm_ops = CopyingVmOps::default();
+        let mut result = RunResult::new("vm0", &task.output_dir, &task.logs_dir);
+        let run_error = None;
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let collect_error = rt.block_on(collect_output_with_ops(
+            &vm_ops,
+            "vm0",
+            &task,
+            &mut result,
+            &run_error,
+        ));
+
+        let err = collect_error.expect("expected invalid artifact path error");
+        match err {
+            Error::Runtime { message } => {
+                assert!(message.contains("artifact path"));
+                assert!(message.contains(".."));
+            }
+            other => panic!("Expected Runtime error, got: {other}"),
+        }
+
+        let calls = vm_ops.cp_from_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, format!("{}/*", VM_LOGS_DIR));
     }
 
     #[test]

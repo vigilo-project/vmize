@@ -93,7 +93,12 @@ fn print_chain_steps(chain: &worker::ChainRunResult) {
             .task_name
             .clone()
             .unwrap_or_else(|| step.task_dir.display().to_string());
-        eprintln!("  step {}: {} ({})", idx + 1, name, step.task_dir.display());
+        eprintln!(
+            "  Task Chain step {}: {} ({})",
+            idx + 1,
+            name,
+            step.task_dir.display()
+        );
         if !step.handoff_artifacts.is_empty() {
             eprintln!(
                 "    handoff artifacts: {}",

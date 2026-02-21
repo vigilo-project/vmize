@@ -20,7 +20,7 @@ Task definition crate for parsing `task.json` and validating task directories.
 
 Task runner on top of `vm`.
 A **task** is a directory with `task.json`, `input/`, and `output/`.
-Tasks can be chained with `next_task_dir`; upstream `artifacts` are handed off as downstream `input`.
+Tasks can form a Task Chain with `next_task_dir`; upstream `artifacts` are handed off as downstream `input`.
 
 ### [`worker/example`](./worker/example)
 
@@ -28,7 +28,7 @@ Curated sample tasks (`runc`, `runc-llama`, `runc-llama-mincap`, `ollama`) live 
 
 ### [`dashboard`](./dashboard)
 
-Web control plane for queuing and running `worker` tasks (including chained tasks) with live progress.
+Web control plane for queuing and running `worker` tasks (including Task Chain runs) with live progress.
 
 ### [`cli` (`vmize`)](./cli)
 
@@ -58,7 +58,7 @@ cargo build --release
 cargo build --release
 ./target/release/vmize task worker/example/task1
 ./target/release/vmize task worker/example/runc-llama
-# `runc-llama` is a chained run:
+# `runc-llama` runs as a Task Chain:
 # runc-llama -> runc-llama-mincap (minimized config.json)
 ```
 

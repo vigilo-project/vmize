@@ -47,7 +47,7 @@ cargo build --release
 ./target/release/vmize task example/runc
 ./target/release/vmize task example/runc-llama
 
-# runc-llama chain:
+# runc-llama Task Chain:
 #   step1: runc-llama (build + prompt run)
 #   step2: runc-llama-mincap (capability minimization)
 ./target/release/vmize task worker/example/runc-llama
