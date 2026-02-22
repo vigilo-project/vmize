@@ -44,6 +44,27 @@ run_exec() {
     ${SUDO} runc exec "${CONTAINER_NAME}" /bin/sh -lc "${cmd}"
 }
 
+run_exec_with_retry() {
+    local description="$1"
+    local cmd="$2"
+    local attempts="${3:-4}"
+    local attempt sleep_sec
+
+    for ((attempt = 1; attempt <= attempts; attempt++)); do
+        if run_exec "${cmd}"; then
+            return 0
+        fi
+
+        if (( attempt < attempts )); then
+            sleep_sec=$((attempt * 2))
+            echo "[!] ${description} failed (${attempt}/${attempts}), retrying in ${sleep_sec}s"
+            sleep "${sleep_sec}"
+        fi
+    done
+
+    return 1
+}
+
 cleanup() {
     echo "[*] Cleaning up container: ${CONTAINER_NAME}"
     ${SUDO} runc delete -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
@@ -65,14 +86,28 @@ else
 fi
 
 echo "[*] Installing llama.cpp dependencies inside container"
-run_exec "export DEBIAN_FRONTEND=noninteractive; \
-    apt-get update; \
-    apt-get install -y --no-install-recommends build-essential cmake git ca-certificates pkg-config"
+run_exec "cat > /etc/resolv.conf <<'EOF'
+nameserver 1.1.1.1
+nameserver 8.8.8.8
+options timeout:2 attempts:3 rotate
+EOF"
+run_exec_with_retry \
+    "container apt dependencies install" \
+    "export DEBIAN_FRONTEND=noninteractive; \
+    apt-get -qq update -o Acquire::Retries=3 -o Acquire::http::Timeout=20; \
+    apt-get -qq install -y --no-install-recommends build-essential cmake git ca-certificates pkg-config" \
+    5
 
 echo "[*] Building llama.cpp inside container rootfs"
-run_exec "if [ ! -d /opt/llama.cpp/.git ]; then git clone --depth 1 https://github.com/ggerganov/llama.cpp /opt/llama.cpp; fi"
-run_exec "cmake -S /opt/llama.cpp -B /opt/llama.cpp/build -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF"
-run_exec "cmake --build /opt/llama.cpp/build --target llama-cli -j 2"
+run_exec "if [ ! -d /opt/llama.cpp/.git ]; then git clone --depth 1 --quiet https://github.com/ggerganov/llama.cpp /opt/llama.cpp; fi"
+if ! run_exec "cmake -S /opt/llama.cpp -B /opt/llama.cpp/build -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF >/tmp/llama-cmake-config.log 2>&1"; then
+    run_exec "tail -n 120 /tmp/llama-cmake-config.log" || true
+    exit 1
+fi
+if ! run_exec "cmake --build /opt/llama.cpp/build --target llama-cli -j 2 >/tmp/llama-cmake-build.log 2>&1"; then
+    run_exec "tail -n 120 /tmp/llama-cmake-build.log" || true
+    exit 1
+fi
 
 run_exec "test -x /opt/llama.cpp/build/bin/llama-cli"
 

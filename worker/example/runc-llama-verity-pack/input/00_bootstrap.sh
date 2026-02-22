@@ -63,14 +63,14 @@ apt_update() {
 
 apt_install_deps() {
     ${SUDO} env DEBIAN_FRONTEND=noninteractive apt-get -qq install -y --no-install-recommends \
-        jq \
-        libgomp1 \
-        libstdc++6
+        squashfs-tools \
+        cryptsetup-bin \
+        jq
 }
 
 apt_has_candidate() {
     local pkg candidate
-    for pkg in jq libgomp1 libstdc++6; do
+    for pkg in squashfs-tools cryptsetup-bin jq; do
         candidate="$(apt-cache policy "${pkg}" | awk '/Candidate:/ {print $2; exit}')"
         if [[ -z "${candidate}" || "${candidate}" == "(none)" ]]; then
             echo "[!] Package '${pkg}' has no candidate in apt cache"
@@ -89,4 +89,4 @@ ensure_hostname_mapping
 with_retries "apt-get update" apt_update
 with_retries "apt-get update/install dependencies" apt_update_and_install
 
-echo "[+] runc-llama-hardened bootstrap complete"
+echo "[+] runc-llama-verity-pack bootstrap complete"

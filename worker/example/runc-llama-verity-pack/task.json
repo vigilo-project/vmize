@@ -1,0 +1,16 @@
+{
+  "name": "runc-llama-verity-pack",
+  "description": "Convert handed-off rootfs into squashfs+dm-verity artifacts and pass through model/config for the runtime verification stage",
+  "disk_size": "20G",
+  "commands": [
+    "00_bootstrap.sh",
+    "10_make_verity.sh"
+  ],
+  "artifacts": [
+    "rootfs.squashfs",
+    "rootfs.verity",
+    "rootfs.root_hash",
+    "model.gguf",
+    "config.json"
+  ]
+}

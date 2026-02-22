@@ -183,6 +183,14 @@ elif [[ -f "/etc/resolv.conf" ]]; then
     cp "/etc/resolv.conf" "${ROOTFS_ETC}/resolv.conf"
 fi
 
+if [[ ! -s "${ROOTFS_ETC}/resolv.conf" ]] || grep -Eq '^[[:space:]]*nameserver[[:space:]]+(127\.|::1)' "${ROOTFS_ETC}/resolv.conf"; then
+    cat > "${ROOTFS_ETC}/resolv.conf" <<'EOF'
+nameserver 1.1.1.1
+nameserver 8.8.8.8
+options timeout:2 attempts:3 rotate
+EOF
+fi
+
 LOCAL_SOURCE_MODEL="$(pick_local_model_path || true)"
 MODEL_URL=""
 

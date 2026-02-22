@@ -7,10 +7,18 @@ BUNDLE_ENV="${ARTIFACT_DIR}/bundle.env"
 ROOTFS_DIR="${BUNDLE_DIR}/rootfs"
 CONFIG_PATH="${BUNDLE_DIR}/config.json"
 HANDOFF_ROOTFS="/tmp/vmize-worker/out/rootfs"
+HANDOFF_ROOTFS_TAR="${HANDOFF_ROOTFS}/rootfs.tar"
+HANDOFF_ROOTFS_LIST="${HANDOFF_ROOTFS}/rootfs.list"
 HANDOFF_CONFIG="/tmp/vmize-worker/out/config.json"
 HANDOFF_MODEL="/tmp/vmize-worker/out/model.gguf"
 
 command -v jq >/dev/null 2>&1 || { echo "[ERROR] jq not found"; exit 1; }
+
+if [[ "$(id -u)" -ne 0 ]]; then
+    SUDO="sudo"
+else
+    SUDO=""
+fi
 
 if [[ ! -f "${BUNDLE_ENV}" ]]; then
     echo "[ERROR] bundle.env not found at ${BUNDLE_ENV}"
@@ -53,20 +61,34 @@ jq empty "${CONFIG_PATH}" >/dev/null
 
 echo "[*] Staging artifacts for chained task"
 rm -rf "${HANDOFF_ROOTFS}"
-mkdir -p "${HANDOFF_ROOTFS}/opt/llama.cpp/build/bin"
-cp -a "${ROOTFS_DIR}/opt/llama.cpp/build/bin/." \
-      "${HANDOFF_ROOTFS}/opt/llama.cpp/build/bin/"
+mkdir -p "${HANDOFF_ROOTFS}"
+${SUDO} tar \
+    --exclude='./dev/*' \
+    --exclude='./proc/*' \
+    --exclude='./sys/*' \
+    --exclude='./run/*' \
+    -C "${ROOTFS_DIR}" \
+    -cf "${HANDOFF_ROOTFS_TAR}" \
+    .
+${SUDO} chown "$(id -u):$(id -g)" "${HANDOFF_ROOTFS_TAR}"
 printf '%s\n' "${ROOTFS_DIR}" > "${HANDOFF_ROOTFS}/ROOTFS_SOURCE.txt"
 
 cp "${CONFIG_PATH}" "${HANDOFF_CONFIG}"
 cp "${MODEL_PATH}" "${HANDOFF_MODEL}"
 
-if [[ ! -x "${HANDOFF_ROOTFS}/opt/llama.cpp/build/bin/llama-cli" ]]; then
+if [[ ! -s "${HANDOFF_ROOTFS_TAR}" ]]; then
+    echo "[ERROR] handoff rootfs archive is missing or empty at ${HANDOFF_ROOTFS_TAR}"
+    exit 1
+fi
+
+tar -tf "${HANDOFF_ROOTFS_TAR}" > "${HANDOFF_ROOTFS_LIST}"
+
+if ! grep -Eq '^(\./)?opt/llama.cpp/build/bin/llama-cli$' "${HANDOFF_ROOTFS_LIST}"; then
     echo "[ERROR] handoff rootfs is missing /opt/llama.cpp/build/bin/llama-cli"
     exit 1
 fi
 
-if [[ ! -e "${HANDOFF_ROOTFS}/opt/llama.cpp/build/bin/libllama.so.0" ]]; then
+if ! grep -Eq '^(\./)?opt/llama.cpp/build/bin/libllama\.so(\..*)?$' "${HANDOFF_ROOTFS_LIST}"; then
     echo "[ERROR] handoff rootfs is missing /opt/llama.cpp/build/bin/libllama.so.0"
     exit 1
 fi

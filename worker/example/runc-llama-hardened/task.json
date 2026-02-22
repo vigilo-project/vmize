@@ -1,14 +1,19 @@
 {
   "name": "runc-llama-hardened",
   "description": "Consume rootfs/config/model artifacts, produce hardened OCI config for UDS-only communication, and prepare capability-minimized runtime settings",
+  "disk_size": "20G",
   "commands": [
     "00_bootstrap.sh",
     "10_minimize_config.sh"
   ],
   "artifacts": [
+    "rootfs",
+    "config.json",
+    "model.gguf",
     "config.min.json",
     "removed-caps.txt",
     "cap-summary.txt",
     "llama-answer.txt"
-  ]
+  ],
+  "next_task_dir": "../runc-llama-verity-pack"
 }
