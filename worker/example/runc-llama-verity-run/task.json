@@ -1,0 +1,17 @@
+{
+  "name": "runc-llama-verity-run",
+  "description": "Run llama on dm-verity verified squashfs rootfs via runc and validate abstract UDS prompt flow",
+  "disk_size": "20G",
+  "commands": [
+    "00_bootstrap.sh",
+    "10_run_verity_uds.sh"
+  ],
+  "artifacts": [
+    "llama-answer.txt",
+    "llama-error.txt",
+    "llama-service.log",
+    "runtime-summary.txt",
+    "runc-list.txt",
+    "prompt.txt"
+  ]
+}

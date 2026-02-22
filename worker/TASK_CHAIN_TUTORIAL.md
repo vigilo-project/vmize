@@ -6,11 +6,11 @@ This document defines how to develop and maintain Task Chain workflows in `worke
 
 The current reference chain is:
 
-`runc-llama-build -> runc-llama-hardened -> runc-llama-verity-pack`
+`runc-llama-build -> runc-llama-hardened -> runc-llama-verity-pack -> runc-llama-verity-run`
 
 Use this file as the canonical record for Task Chain behavior, contracts, troubleshooting, and change history.
 
-## Chain Overview (`build -> hardened -> verity-pack`)
+## Chain Overview (`build -> hardened -> verity-pack -> verity-run`)
 
 1. `runc-llama-build`
 - Builds and runs llama on top of runc.
@@ -25,7 +25,12 @@ Use this file as the canonical record for Task Chain behavior, contracts, troubl
 3. `runc-llama-verity-pack`
 - Consumes hardened `rootfs/config/model` artifacts.
 - Produces squashfs + dm-verity metadata (`rootfs.squashfs`, `rootfs.verity`, `rootfs.root_hash`).
-- Passes through `config.json` and `model.gguf` for the planned runtime verification stage.
+- Passes through `config.json` and `model.gguf` for runtime verification stage.
+
+4. `runc-llama-verity-run`
+- Consumes stage3 verity artifacts and opens dm-verity mapping at runtime.
+- Mounts verified squashfs rootfs and runs runc using patched config.
+- Validates guest-to-container abstract UDS prompt flow and emits `llama-answer.txt`.
 
 ## Artifact Contract (Input / Output)
 
@@ -78,6 +83,28 @@ Use this file as the canonical record for Task Chain behavior, contracts, troubl
   - `rootfs.root_hash`
   - `model.gguf`
   - `config.json`
+- Downstream handoff:
+  - via `next_task_dir: ../runc-llama-verity-run`
+
+4. `runc-llama-verity-run`
+- Input expectations (from upstream handoff):
+  - `rootfs.squashfs`
+  - `rootfs.verity`
+  - `rootfs.root_hash`
+  - `config.json`
+  - `model.gguf`
+- Runtime behavior:
+  - creates loop devices for squashfs/hash payload
+  - validates and opens dm-verity mapping
+  - mounts verified squashfs rootfs
+  - runs `runc` and serves llama inference via abstract UDS
+- Output artifacts (`task.json`):
+  - `llama-answer.txt`
+  - `llama-error.txt`
+  - `llama-service.log`
+  - `runtime-summary.txt`
+  - `runc-list.txt`
+  - `prompt.txt`
 
 ## Run And Validation Commands
 
@@ -101,11 +128,14 @@ cargo test -p worker --test integration
   - `"next_task_dir": "../runc-llama-hardened"`
 - Verify `/Users/sangwan/dev/vmize/worker/example/runc-llama-hardened/task.json` has:
   - `"next_task_dir": "../runc-llama-verity-pack"`
+- Verify `/Users/sangwan/dev/vmize/worker/example/runc-llama-verity-pack/task.json` has:
+  - `"next_task_dir": "../runc-llama-verity-run"`
 
 2. Handoff artifact errors
 - Confirm upstream artifacts exist in each step output:
   - step1 -> step2: `rootfs`, `config.json`, `model.gguf`
   - step2 -> step3: `rootfs`, `config.json`, `model.gguf`
+  - step3 -> step4: `rootfs.squashfs`, `rootfs.verity`, `rootfs.root_hash`, `config.json`, `model.gguf`
 
 3. Downstream script failures
 - Check logs under each task's `output/logs/`.
@@ -115,16 +145,11 @@ cargo test -p worker --test integration
 - Validate bootstrap dependencies:
   - step1/step2: `jq`, `runc`, `wget`, `tar`, etc.
   - step3: `squashfs-tools`, `cryptsetup-bin`, `jq`
+  - step4: `runc`, `cryptsetup-bin`, `squashfs-tools`, `util-linux`, `socat`, `jq`
 
 5. Disk size / space failures
-- Stage2 and stage3 are configured with `"disk_size": "20G"` to absorb large `rootfs` handoff payloads.
+- Stage2, stage3, and stage4 are configured with `"disk_size": "20G"` to absorb large handoff payloads.
 - If `No space left on device` appears, verify each task JSON keeps `disk_size` at least `20G`.
-
-## Planned Next Stage
-
-`runc-llama-verity-pack` is currently the last implemented stage.
-The next planned stage will consume `rootfs.squashfs/rootfs.verity/rootfs.root_hash/config.json/model.gguf`,
-open dm-verity at runtime, mount verified rootfs, run runc, and validate UDS inference.
 
 ## Change Log
 
@@ -269,3 +294,32 @@ Entry format:
 - `cargo test -p worker --lib` -> pass
 - `cargo test -p worker --test integration` -> pass (`7 passed`)
 - `CARGO_BUILD_JOBS=2 cargo run -p vmize -- task /Users/sangwan/dev/vmize/worker/example/runc-llama-build` -> still flaky in this environment (intermittent `status -1` VM/script interruption during long-running chain path)
+
+### 2026-02-22 (verity runtime stage added and validated)
+
+1. Reason
+- Implement stage4 runtime verification that consumes stage3 verity artifacts, runs runc on verified rootfs, and validates abstract UDS inference.
+
+2. Modified files
+- `/Users/sangwan/dev/vmize/worker/example/runc-llama-verity-pack/task.json`
+- `/Users/sangwan/dev/vmize/worker/example/runc-llama-verity-run/task.json`
+- `/Users/sangwan/dev/vmize/worker/example/runc-llama-verity-run/input/00_bootstrap.sh`
+- `/Users/sangwan/dev/vmize/worker/example/runc-llama-verity-run/input/10_run_verity_uds.sh`
+- `/Users/sangwan/dev/vmize/worker/README.md`
+- `/Users/sangwan/dev/vmize/README.md`
+- `/Users/sangwan/dev/vmize/worker/TASK_CHAIN_TUTORIAL.md`
+
+3. Behavioral changes
+- Added new stage4 task `runc-llama-verity-run`.
+- Stage3 now links to stage4 with `next_task_dir: ../runc-llama-verity-run`.
+- Stage4 now:
+  - opens dm-verity mapping from `rootfs.squashfs/rootfs.verity/rootfs.root_hash`
+  - mounts verified squashfs rootfs
+  - runs runc with patched config (`/models` bind mount + `/tmp` tmpfs)
+  - validates prompt/response over abstract UDS and writes `llama-answer.txt`
+
+4. Verification commands and results
+- `cargo test -p worker --test integration all_example_shell_scripts_pass_bash_n -- --nocapture` -> pass
+- `CARGO_BUILD_JOBS=2 cargo run -p vmize -- task /tmp/vmize-runc-llama-verity-run-3pnxqF` -> pass (stage4 run from stage3 artifacts)
+- `test -s /tmp/vmize-runc-llama-verity-run-3pnxqF/output/llama-answer.txt` -> pass
+- `grep -q '^uds_socket=@' /tmp/vmize-runc-llama-verity-run-3pnxqF/output/runtime-summary.txt` -> pass

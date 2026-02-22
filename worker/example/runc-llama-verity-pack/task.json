@@ -12,5 +12,6 @@
     "rootfs.root_hash",
     "model.gguf",
     "config.json"
-  ]
+  ],
+  "next_task_dir": "../runc-llama-verity-run"
 }

@@ -52,11 +52,13 @@ cargo build --release
 #   step1: runc-llama-build (HTTP prompt flow)
 #   step2: runc-llama-hardened (hardened config for UDS-oriented stage)
 #   step3: runc-llama-verity-pack (squashfs + dm-verity artifact packaging)
+#   step4: runc-llama-verity-run (dm-verity runtime mount + abstract UDS inference check)
 ./target/release/vmize task worker/example/runc-llama-build
 ```
 
 `worker/example/runc-llama-hardened` expects `rootfs`, `config.json`, and `model.gguf`
-from `runc-llama-build` and hands off to `runc-llama-verity-pack`.
+from `runc-llama-build`, hands off to `runc-llama-verity-pack`, and then into
+`runc-llama-verity-run` for runtime verification.
 
 ## Task Directory Structure
 

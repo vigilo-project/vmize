@@ -24,7 +24,7 @@ Tasks can form a Task Chain with `next_task_dir`; upstream `artifacts` are hande
 
 ### [`worker/example`](./worker/example)
 
-Curated sample tasks (`runc`, `runc-llama-build`, `runc-llama-hardened`, `runc-llama-verity-pack`, `ollama`) live here.
+Curated sample tasks (`runc`, `runc-llama-build`, `runc-llama-hardened`, `runc-llama-verity-pack`, `runc-llama-verity-run`, `ollama`) live here.
 
 ### [`dashboard`](./dashboard)
 
@@ -59,7 +59,7 @@ cargo build --release
 ./target/release/vmize task worker/example/task1
 ./target/release/vmize task worker/example/runc-llama-build
 # `runc-llama-build` runs as a Task Chain:
-# runc-llama-build -> runc-llama-hardened -> runc-llama-verity-pack
+# runc-llama-build -> runc-llama-hardened -> runc-llama-verity-pack -> runc-llama-verity-run
 ```
 
 ## Quick Start: dashboard
