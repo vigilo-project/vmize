@@ -1,0 +1,22 @@
+{
+  "name": "ima-sign",
+  "description": "IMA debug-verify validation task: sign sample files, verify tamper failure, and confirm signatures survive tar + HTTP upload/download roundtrip",
+  "disk_size": "20G",
+  "commands": [
+    "00_bootstrap.sh",
+    "10_sign_verify.sh"
+  ],
+  "artifacts": [
+    "ima-sign-summary.txt",
+    "ima-sign.log",
+    "ima-verify.log",
+    "ima-negative.log",
+    "ima-http-roundtrip.log",
+    "signed-xattr.txt",
+    "cert.der",
+    "sample-a.txt",
+    "sample-b.bin",
+    "signed-http.tar",
+    "downloaded-signed-http.tar"
+  ]
+}

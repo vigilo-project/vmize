@@ -64,20 +64,17 @@ apt_update() {
 apt_install_deps() {
     ${SUDO} env DEBIAN_FRONTEND=noninteractive apt-get -qq install -y --no-install-recommends \
         attr \
-        cryptsetup-bin \
+        curl \
         ima-evm-utils \
         jq \
         keyutils \
         openssl \
-        runc \
-        socat \
-        squashfs-tools \
-        util-linux
+        python3
 }
 
 apt_has_candidate() {
     local pkg candidate
-    for pkg in attr cryptsetup-bin ima-evm-utils jq keyutils openssl runc socat squashfs-tools util-linux; do
+    for pkg in attr curl ima-evm-utils jq keyutils openssl python3; do
         candidate="$(apt-cache policy "${pkg}" | awk '/Candidate:/ {print $2; exit}')"
         if [[ -z "${candidate}" || "${candidate}" == "(none)" ]]; then
             echo "[!] Package '${pkg}' has no candidate in apt cache"
@@ -96,4 +93,4 @@ ensure_hostname_mapping
 with_retries "apt-get update" apt_update
 with_retries "apt-get update/install dependencies" apt_update_and_install
 
-echo "[+] runc-llama-verity-run bootstrap complete"
+echo "[+] ima-sign bootstrap complete"

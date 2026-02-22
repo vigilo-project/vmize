@@ -47,18 +47,24 @@ cargo build --release
 # Shared tasks
 ./target/release/vmize task example/runc
 ./target/release/vmize task example/runc-llama-build
+./target/release/vmize task worker/example/ima-sign
 
 # runc-llama Task Chain:
 #   step1: runc-llama-build (HTTP prompt flow)
 #   step2: runc-llama-hardened (hardened config for UDS-oriented stage)
 #   step3: runc-llama-verity-pack (squashfs + dm-verity artifact packaging)
-#   step4: runc-llama-verity-run (dm-verity runtime mount + abstract UDS inference check)
+#   step4: runc-llama-verity-run (runtime smoke/UDS check + IMA-sign + xattr tar packaging)
+#   step5: runc-llama-ima-verify-run (verify tar+cert with IMA, then run UDS inference)
 ./target/release/vmize task worker/example/runc-llama-build
 ```
 
 `worker/example/runc-llama-hardened` expects `rootfs`, `config.json`, and `model.gguf`
 from `runc-llama-build`, hands off to `runc-llama-verity-pack`, and then into
-`runc-llama-verity-run` for runtime verification.
+`runc-llama-verity-run`, and finally to `runc-llama-ima-verify-run` for IMA-verified replay.
+
+`worker/example/ima-sign` is an independent debug-verify task that checks
+`ima_sign` + `ima_verify`, plus tar+HTTP roundtrip preservation of `security.ima`
+without enabling kernel appraise policy.
 
 ## Task Directory Structure
 

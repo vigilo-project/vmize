@@ -6,11 +6,11 @@ This document defines how to develop and maintain Task Chain workflows in `worke
 
 The current reference chain is:
 
-`runc-llama-build -> runc-llama-hardened -> runc-llama-verity-pack -> runc-llama-verity-run`
+`runc-llama-build -> runc-llama-hardened -> runc-llama-verity-pack -> runc-llama-verity-run -> runc-llama-ima-verify-run`
 
 Use this file as the canonical record for Task Chain behavior, contracts, troubleshooting, and change history.
 
-## Chain Overview (`build -> hardened -> verity-pack -> verity-run`)
+## Chain Overview (`build -> hardened -> verity-pack -> verity-run -> ima-verify-run`)
 
 1. `runc-llama-build`
 - Builds and runs llama on top of runc.
@@ -30,7 +30,25 @@ Use this file as the canonical record for Task Chain behavior, contracts, troubl
 4. `runc-llama-verity-run`
 - Consumes stage3 verity artifacts and opens dm-verity mapping at runtime.
 - Mounts verified squashfs rootfs and runs runc using patched config.
-- Validates guest-to-container abstract UDS prompt flow and emits `llama-answer.txt`.
+- Validates guest-to-container abstract UDS prompt flow.
+- After runtime check, signs handoff payload with IMA and emits xattr-preserving tar + verification cert.
+
+5. `runc-llama-ima-verify-run`
+- Consumes stage4 signed tar + verification cert.
+- Extracts payload with xattrs, verifies IMA signatures, and fails closed on verification errors.
+- Runs runc from verified payload and validates abstract UDS inference (`llama-answer.txt`).
+
+## Related Independent Validation Task
+
+`ima-sign` is intentionally independent from the 5-stage chain.
+
+- Scope:
+  - validates `evmctl ima_sign` and `evmctl ima_verify` behavior on sample files
+  - includes a tamper case that must fail verification
+  - validates tar+HTTP upload/download roundtrip keeps `security.ima` verifiable after extract
+- Safety posture:
+  - debug verify only
+  - does not enable or mutate kernel IMA appraise enforcement policy
 
 ## Artifact Contract (Input / Output)
 
@@ -99,12 +117,28 @@ Use this file as the canonical record for Task Chain behavior, contracts, troubl
   - mounts verified squashfs rootfs
   - runs `runc` and serves llama inference via abstract UDS
 - Output artifacts (`task.json`):
+  - `signed-runtime.tar` (IMA signed payload archive with xattrs)
+  - `cert.der` (verification key for downstream stage)
+- Downstream handoff:
+  - via `next_task_dir: ../runc-llama-ima-verify-run`
+
+5. `runc-llama-ima-verify-run`
+- Input expectations (from upstream handoff):
+  - `signed-runtime.tar`
+  - `cert.der`
+- Runtime behavior:
+  - extracts tar with xattrs restored
+  - verifies IMA signatures on `rootfs.squashfs/rootfs.verity/rootfs.root_hash/config.json/model.gguf`
+  - opens and mounts dm-verity payload only after IMA verify success
+  - runs `runc` and serves llama inference via abstract UDS
+- Output artifacts (`task.json`):
   - `llama-answer.txt`
   - `llama-error.txt`
   - `llama-service.log`
   - `runtime-summary.txt`
   - `runc-list.txt`
   - `prompt.txt`
+  - `ima-verify.log`
 
 ## Run And Validation Commands
 
@@ -114,6 +148,9 @@ cargo build --release
 
 # Run the full chain
 ./target/release/vmize task /Users/sangwan/dev/vmize/worker/example/runc-llama-build
+
+# Run independent IMA signature debug-verify PoC
+./target/release/vmize task /Users/sangwan/dev/vmize/worker/example/ima-sign
 
 # Core regressions
 cargo test -p task
@@ -130,12 +167,15 @@ cargo test -p worker --test integration
   - `"next_task_dir": "../runc-llama-verity-pack"`
 - Verify `/Users/sangwan/dev/vmize/worker/example/runc-llama-verity-pack/task.json` has:
   - `"next_task_dir": "../runc-llama-verity-run"`
+- Verify `/Users/sangwan/dev/vmize/worker/example/runc-llama-verity-run/task.json` has:
+  - `"next_task_dir": "../runc-llama-ima-verify-run"`
 
 2. Handoff artifact errors
 - Confirm upstream artifacts exist in each step output:
   - step1 -> step2: `rootfs`, `config.json`, `model.gguf`
   - step2 -> step3: `rootfs`, `config.json`, `model.gguf`
   - step3 -> step4: `rootfs.squashfs`, `rootfs.verity`, `rootfs.root_hash`, `config.json`, `model.gguf`
+  - step4 -> step5: `signed-runtime.tar`, `cert.der`
 
 3. Downstream script failures
 - Check logs under each task's `output/logs/`.
@@ -145,10 +185,11 @@ cargo test -p worker --test integration
 - Validate bootstrap dependencies:
   - step1/step2: `jq`, `runc`, `wget`, `tar`, etc.
   - step3: `squashfs-tools`, `cryptsetup-bin`, `jq`
-  - step4: `runc`, `cryptsetup-bin`, `squashfs-tools`, `util-linux`, `socat`, `jq`
+  - step4: `runc`, `cryptsetup-bin`, `squashfs-tools`, `util-linux`, `socat`, `jq`, `ima-evm-utils`, `openssl`
+  - step5: `runc`, `cryptsetup-bin`, `squashfs-tools`, `util-linux`, `socat`, `jq`, `ima-evm-utils`, `tar`
 
 5. Disk size / space failures
-- Stage2, stage3, and stage4 are configured with `"disk_size": "20G"` to absorb large handoff payloads.
+- Stage2, stage3, stage4, and stage5 are configured with `"disk_size": "20G"` to absorb large handoff payloads.
 - If `No space left on device` appears, verify each task JSON keeps `disk_size` at least `20G`.
 
 ## Change Log
@@ -323,3 +364,73 @@ Entry format:
 - `CARGO_BUILD_JOBS=2 cargo run -p vmize -- task /Users/sangwan/dev/vmize/worker/example/runc-llama-build` -> pass (4-step chain)
 - `test -s /Users/sangwan/dev/vmize/worker/example/runc-llama-verity-run/output/llama-answer.txt` -> pass
 - `grep -q '^uds_socket=@' /Users/sangwan/dev/vmize/worker/example/runc-llama-verity-run/output/runtime-summary.txt` -> pass
+
+### 2026-02-22 (independent IMA sign + HTTP tar roundtrip task added)
+
+1. Reason
+- Validate feasibility of IMA-based signing and verification before integrating signature checks into the stage4 artifact path.
+- Keep scope safe by using debug verify only, with no IMA appraise policy enforcement.
+
+2. Modified files
+- `/Users/sangwan/dev/vmize/worker/example/ima-sign/task.json`
+- `/Users/sangwan/dev/vmize/worker/example/ima-sign/input/00_bootstrap.sh`
+- `/Users/sangwan/dev/vmize/worker/example/ima-sign/input/10_sign_verify.sh`
+- `/Users/sangwan/dev/vmize/worker/example/ima-sign/output/.gitkeep`
+- `/Users/sangwan/dev/vmize/worker/README.md`
+- `/Users/sangwan/dev/vmize/README.md`
+- `/Users/sangwan/dev/vmize/worker/TASK_CHAIN_TUTORIAL.md`
+
+3. Behavioral changes
+- Added independent task `ima-sign` (not linked via `next_task_dir`).
+- Task now:
+  - signs `sample-a.txt` and `sample-b.bin` with `evmctl ima_sign`
+  - verifies both files using `evmctl -v --key cert.der ima_verify`
+  - mutates one signed sample and asserts verification fails
+  - packs signed files with `tar --xattrs --xattrs-include='*'`, serves over local HTTP, downloads, extracts, and re-verifies
+- Output artifacts now include sign/verify logs, HTTP roundtrip log, xattr dump, summary, and tar payloads.
+- Private signing key (`key.pem`) is ephemeral and not exported.
+
+4. Verification commands and results
+- `cargo test -p worker --test integration all_example_shell_scripts_pass_bash_n -- --nocapture` -> pass
+- `CARGO_BUILD_JOBS=2 cargo run -p vmize -- task /Users/sangwan/dev/vmize/worker/example/ima-sign` -> pass
+- `test -s /Users/sangwan/dev/vmize/worker/example/ima-sign/output/ima-sign-summary.txt` -> pass
+- `grep -F 'positive verify: success' /Users/sangwan/dev/vmize/worker/example/ima-sign/output/ima-sign-summary.txt` -> pass
+- `grep -F 'tampered verify: expected failure' /Users/sangwan/dev/vmize/worker/example/ima-sign/output/ima-sign-summary.txt` -> pass
+- `grep -F 'http_roundtrip_verify=success' /Users/sangwan/dev/vmize/worker/example/ima-sign/output/ima-sign-summary.txt` -> pass
+
+### 2026-02-22 (stage4 IMA signed packaging + stage5 IMA verify runtime)
+
+1. Reason
+- Add IMA signature-preserving packaging at stage4 and enforce IMA verification before runtime execution at stage5.
+- Ensure stage5 only runs llama inference after tar payload verification succeeds.
+
+2. Modified files
+- `/Users/sangwan/dev/vmize/worker/example/runc-llama-verity-run/task.json`
+- `/Users/sangwan/dev/vmize/worker/example/runc-llama-verity-run/input/00_bootstrap.sh`
+- `/Users/sangwan/dev/vmize/worker/example/runc-llama-verity-run/input/10_run_verity_uds.sh`
+- `/Users/sangwan/dev/vmize/worker/example/runc-llama-ima-verify-run/task.json`
+- `/Users/sangwan/dev/vmize/worker/example/runc-llama-ima-verify-run/input/00_bootstrap.sh`
+- `/Users/sangwan/dev/vmize/worker/example/runc-llama-ima-verify-run/input/10_verify_and_run.sh`
+- `/Users/sangwan/dev/vmize/worker/example/runc-llama-ima-verify-run/output/.gitkeep`
+- `/Users/sangwan/dev/vmize/worker/README.md`
+- `/Users/sangwan/dev/vmize/README.md`
+- `/Users/sangwan/dev/vmize/worker/TASK_CHAIN_TUTORIAL.md`
+
+3. Behavioral changes
+- Stage4 still performs dm-verity runtime/UDS inference validation, then IMA-signs handoff files.
+- Stage4 now outputs only:
+  - `signed-runtime.tar` (xattrs included)
+  - `cert.der` (verification key)
+- Added stage5 `runc-llama-ima-verify-run`:
+  - extracts stage4 tar with xattrs
+  - verifies IMA signatures with `cert.der`
+  - runs dm-verity + runc + abstract UDS inference only after successful verification
+  - emits `llama-answer.txt` and `ima-verify.log`
+
+4. Verification commands and results
+- `cargo test -p worker --test integration all_example_shell_scripts_pass_bash_n -- --nocapture` -> pass
+- `CARGO_BUILD_JOBS=2 cargo run -p vmize -- task /Users/sangwan/dev/vmize/worker/example/runc-llama-build` -> pass (5-step chain)
+- `test -s /Users/sangwan/dev/vmize/worker/example/runc-llama-verity-run/output/signed-runtime.tar` -> pass
+- `test -s /Users/sangwan/dev/vmize/worker/example/runc-llama-verity-run/output/cert.der` -> pass
+- `test -s /Users/sangwan/dev/vmize/worker/example/runc-llama-ima-verify-run/output/llama-answer.txt` -> pass
+- `test -s /Users/sangwan/dev/vmize/worker/example/runc-llama-ima-verify-run/output/ima-verify.log` -> pass

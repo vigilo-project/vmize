@@ -24,7 +24,7 @@ Tasks can form a Task Chain with `next_task_dir`; upstream `artifacts` are hande
 
 ### [`worker/example`](./worker/example)
 
-Curated sample tasks (`runc`, `runc-llama-build`, `runc-llama-hardened`, `runc-llama-verity-pack`, `runc-llama-verity-run`, `ollama`) live here.
+Curated sample tasks (`runc`, `runc-llama-build`, `runc-llama-hardened`, `runc-llama-verity-pack`, `runc-llama-verity-run`, `runc-llama-ima-verify-run`, `ima-sign`, `ollama`) live here.
 
 ### [`dashboard`](./dashboard)
 
@@ -58,8 +58,10 @@ cargo build --release
 cargo build --release
 ./target/release/vmize task worker/example/task1
 ./target/release/vmize task worker/example/runc-llama-build
+./target/release/vmize task worker/example/ima-sign
 # `runc-llama-build` runs as a Task Chain:
-# runc-llama-build -> runc-llama-hardened -> runc-llama-verity-pack -> runc-llama-verity-run
+# runc-llama-build -> runc-llama-hardened -> runc-llama-verity-pack -> runc-llama-verity-run -> runc-llama-ima-verify-run
+# `ima-sign` is independent (debug verify + tar/HTTP roundtrip check, no IMA appraise enforcement)
 ```
 
 ## Quick Start: dashboard

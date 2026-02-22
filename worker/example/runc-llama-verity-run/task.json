@@ -1,17 +1,14 @@
 {
   "name": "runc-llama-verity-run",
-  "description": "Run llama on dm-verity verified squashfs rootfs via runc and validate abstract UDS prompt flow",
+  "description": "Run llama on dm-verity verified squashfs rootfs, then IMA-sign handoff files and package xattr-preserving tar for downstream verified replay",
   "disk_size": "20G",
   "commands": [
     "00_bootstrap.sh",
     "10_run_verity_uds.sh"
   ],
   "artifacts": [
-    "llama-answer.txt",
-    "llama-error.txt",
-    "llama-service.log",
-    "runtime-summary.txt",
-    "runc-list.txt",
-    "prompt.txt"
-  ]
+    "signed-runtime.tar",
+    "cert.der"
+  ],
+  "next_task_dir": "../runc-llama-ima-verify-run"
 }

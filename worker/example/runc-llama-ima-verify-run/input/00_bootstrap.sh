@@ -68,7 +68,6 @@ apt_install_deps() {
         ima-evm-utils \
         jq \
         keyutils \
-        openssl \
         runc \
         socat \
         squashfs-tools \
@@ -77,7 +76,7 @@ apt_install_deps() {
 
 apt_has_candidate() {
     local pkg candidate
-    for pkg in attr cryptsetup-bin ima-evm-utils jq keyutils openssl runc socat squashfs-tools util-linux; do
+    for pkg in attr cryptsetup-bin ima-evm-utils jq keyutils runc socat squashfs-tools util-linux; do
         candidate="$(apt-cache policy "${pkg}" | awk '/Candidate:/ {print $2; exit}')"
         if [[ -z "${candidate}" || "${candidate}" == "(none)" ]]; then
             echo "[!] Package '${pkg}' has no candidate in apt cache"
@@ -96,4 +95,4 @@ ensure_hostname_mapping
 with_retries "apt-get update" apt_update
 with_retries "apt-get update/install dependencies" apt_update_and_install
 
-echo "[+] runc-llama-verity-run bootstrap complete"
+echo "[+] runc-llama-ima-verify-run bootstrap complete"
