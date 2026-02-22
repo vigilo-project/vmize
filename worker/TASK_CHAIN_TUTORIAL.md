@@ -320,6 +320,6 @@ Entry format:
 
 4. Verification commands and results
 - `cargo test -p worker --test integration all_example_shell_scripts_pass_bash_n -- --nocapture` -> pass
-- `CARGO_BUILD_JOBS=2 cargo run -p vmize -- task /tmp/vmize-runc-llama-verity-run-3pnxqF` -> pass (stage4 run from stage3 artifacts)
-- `test -s /tmp/vmize-runc-llama-verity-run-3pnxqF/output/llama-answer.txt` -> pass
-- `grep -q '^uds_socket=@' /tmp/vmize-runc-llama-verity-run-3pnxqF/output/runtime-summary.txt` -> pass
+- `CARGO_BUILD_JOBS=2 cargo run -p vmize -- task /Users/sangwan/dev/vmize/worker/example/runc-llama-build` -> pass (4-step chain)
+- `test -s /Users/sangwan/dev/vmize/worker/example/runc-llama-verity-run/output/llama-answer.txt` -> pass
+- `grep -q '^uds_socket=@' /Users/sangwan/dev/vmize/worker/example/runc-llama-verity-run/output/runtime-summary.txt` -> pass
