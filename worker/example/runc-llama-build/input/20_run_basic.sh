@@ -86,11 +86,11 @@ else
 fi
 
 echo "[*] Installing llama.cpp dependencies inside container"
-run_exec "cat > /etc/resolv.conf <<'EOF'
-nameserver 1.1.1.1
-nameserver 8.8.8.8
-options timeout:2 attempts:3 rotate
-EOF"
+# Copy guest VM's resolv.conf into container for DNS resolution
+if ! run_exec "nslookup archive.ubuntu.com" >/dev/null 2>&1; then
+    echo "[!] DNS resolution failed, copying guest VM's resolv.conf to container"
+    ${SUDO} cat /etc/resolv.conf | run_exec "cat > /etc/resolv.conf"
+fi
 run_exec_with_retry \
     "container apt dependencies install" \
     "export DEBIAN_FRONTEND=noninteractive; \
