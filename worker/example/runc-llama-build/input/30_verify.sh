@@ -51,6 +51,11 @@ if [[ ! -x "${ROOTFS_DIR}/opt/llama.cpp/build/bin/llama-cli" ]]; then
     exit 1
 fi
 
+if [[ ! -x "${ROOTFS_DIR}/opt/llama.cpp/build/bin/llama-server" ]]; then
+    echo "[ERROR] llama-server binary not found in rootfs at /opt/llama.cpp/build/bin/llama-server"
+    exit 1
+fi
+
 if [[ ! -s "/tmp/vmize-worker/out/llama-answer.txt" ]]; then
     echo "[ERROR] llama-answer.txt missing or empty"
     exit 1

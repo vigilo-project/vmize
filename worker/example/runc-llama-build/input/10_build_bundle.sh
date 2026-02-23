@@ -5,6 +5,7 @@ CONTAINER_NAME="llama-basic"
 BUNDLE_DIR="/tmp/vmize-worker/work/bundle"
 ARTIFACT_DIR="${BUNDLE_DIR}/artifacts"
 MODELS_DIR="${BUNDLE_DIR}/models"
+SOCKETS_DIR="${BUNDLE_DIR}/sockets"
 ROOTFS_DIR="${BUNDLE_DIR}/rootfs"
 INPUT_MODELS_DIR="/tmp/vmize-worker/work/models"
 
@@ -108,7 +109,7 @@ cleanup() {
 trap cleanup EXIT
 
 rm -rf "${ROOTFS_DIR}"
-mkdir -p "${ROOTFS_DIR}" "${ARTIFACT_DIR}" "${MODELS_DIR}"
+mkdir -p "${ROOTFS_DIR}" "${ARTIFACT_DIR}" "${MODELS_DIR}" "${SOCKETS_DIR}"
 
 echo "[*] Downloading Ubuntu minimal rootfs"
 echo "    URL: ${ROOTFS_URL}"
@@ -141,6 +142,7 @@ echo "[*] Customizing OCI config"
 TMP_CONFIG="${BUNDLE_DIR}/config.json.tmp"
 jq \
     --arg model_source "${MODELS_DIR}" \
+    --arg socket_source "${SOCKETS_DIR}" \
     --argjson caps '[
         "CAP_AUDIT_WRITE",
         "CAP_CHOWN",
@@ -165,11 +167,16 @@ jq \
      .process.capabilities.permitted = $caps |
      .root.readonly = false |
      .linux.namespaces |= map(select(.type != "network")) |
-     .mounts = ((.mounts | map(select(.destination != "/models"))) + [{
+     .mounts = ((.mounts | map(select(.destination != "/models" and .destination != "/sockets"))) + [{
         "destination": "/models",
         "type": "bind",
         "source": $model_source,
         "options": ["rbind", "ro"]
+     }, {
+        "destination": "/sockets",
+        "type": "bind",
+        "source": $socket_source,
+        "options": ["rbind", "rw"]
      }])' \
     "${BUNDLE_DIR}/config.json" > "${TMP_CONFIG}"
 mv "${TMP_CONFIG}" "${BUNDLE_DIR}/config.json"

@@ -11,6 +11,12 @@ INPUT_MODEL="${WORK_DIR}/model.gguf"
 UNPACKED_ROOTFS="${WORK_DIR}/rootfs.unpacked"
 ACTIVE_ROOTFS="${INPUT_ROOTFS}"
 
+BUNDLE_DIR="${WORK_DIR}/bundle"
+BUNDLE_ROOTFS="${BUNDLE_DIR}/rootfs"
+BUNDLE_CONFIG="${BUNDLE_DIR}/config.json"
+MODEL_DIR="${BUNDLE_DIR}/models"
+SOCKET_DIR="${BUNDLE_DIR}/sockets"
+
 OUTPUT_ROOTFS="${OUT_DIR}/rootfs"
 OUTPUT_CHAIN_CONFIG="${OUT_DIR}/config.json"
 OUTPUT_CHAIN_MODEL="${OUT_DIR}/model.gguf"
@@ -19,10 +25,19 @@ OUTPUT_REMOVED="${OUT_DIR}/removed-caps.txt"
 OUTPUT_SUMMARY="${OUT_DIR}/cap-summary.txt"
 OUTPUT_ANSWER="${OUT_DIR}/llama-answer.txt"
 OUTPUT_ERROR="${OUT_DIR}/llama-error.txt"
+OUTPUT_RUNC_LIST="${OUT_DIR}/runc-list.txt"
+OUTPUT_SERVER_LOG="${OUT_DIR}/llama-server.log"
 PROMPT_TEXT="${LLAMA_PROMPT:-Say in one short sentence that hardened runc llama stage works.}"
+
+CONTAINER_NAME="llama-hardened"
+SOCKET_PATH="${SOCKET_DIR}/llama.sock"
+SERVER_TIMEOUT=60
+BIND_MOUNTED=0
 
 command -v jq >/dev/null 2>&1 || { echo "[ERROR] jq not found"; exit 1; }
 command -v tar >/dev/null 2>&1 || { echo "[ERROR] tar not found"; exit 1; }
+command -v runc >/dev/null 2>&1 || { echo "[ERROR] runc not found"; exit 1; }
+command -v curl >/dev/null 2>&1 || { echo "[ERROR] curl not found"; exit 1; }
 
 if [[ "$(id -u)" -ne 0 ]]; then
     SUDO="sudo"
@@ -73,15 +88,50 @@ DROP_CAPS=(
 
 drop_caps_json="$(printf '%s\n' "${DROP_CAPS[@]}" | jq -R . | jq -s .)"
 
+# Create bundle directory structure
+rm -rf "${BUNDLE_DIR}"
+mkdir -p "${BUNDLE_ROOTFS}" "${MODEL_DIR}" "${SOCKET_DIR}"
+
+# Ensure socket directory is writable (container runs as root)
+chmod 777 "${SOCKET_DIR}"
+
+# Copy model to bundle
+cp -f "${INPUT_MODEL}" "${MODEL_DIR}/model.gguf"
+
+# Create bind mount from ACTIVE_ROOTFS to BUNDLE_ROOTFS
+${SUDO} mount --bind "${ACTIVE_ROOTFS}" "${BUNDLE_ROOTFS}"
+${SUDO} mount -o remount,bind,ro "${BUNDLE_ROOTFS}"
+BIND_MOUNTED=1
+
+# Generate minimized config with UDS socket mount
 jq \
     --argjson drop "${drop_caps_json}" \
+    --arg model_source "${MODEL_DIR}" \
+    --arg socket_source "${SOCKET_DIR}" \
     'def trim_caps($drop):
         (. // [])
         | map(select(($drop | index(.)) | not))
         | unique;
      .process.capabilities.bounding = trim_caps($drop) |
      .process.capabilities.effective = trim_caps($drop) |
-     .process.capabilities.permitted = trim_caps($drop)' \
+     .process.capabilities.permitted = trim_caps($drop) |
+     .root.path = "rootfs" |
+     .process.args = ["/bin/sh", "-lc", "sleep infinity"] |
+     .mounts = (
+        (.mounts // [])
+        | map(select(.destination != "/models" and .destination != "/sockets"))
+        + [{
+            "destination": "/models",
+            "type": "bind",
+            "source": $model_source,
+            "options": ["rbind", "ro"]
+        }, {
+            "destination": "/sockets",
+            "type": "bind",
+            "source": $socket_source,
+            "options": ["rbind", "rw"]
+        }]
+     )' \
     "${INPUT_CONFIG}" > "${OUTPUT_CONFIG}"
 
 for cap in "${DROP_CAPS[@]}"; do
@@ -109,37 +159,167 @@ printf '%s\n' "${DROP_CAPS[@]}" > "${OUTPUT_REMOVED}"
     echo "permitted_after=$(jq '.process.capabilities.permitted | length' "${OUTPUT_CONFIG}")"
 } > "${OUTPUT_SUMMARY}"
 
-RUNTIME_LD_LIBRARY_PATH="${ACTIVE_ROOTFS}/opt/llama.cpp/build/bin:${ACTIVE_ROOTFS}/usr/lib/aarch64-linux-gnu:${ACTIVE_ROOTFS}/lib/aarch64-linux-gnu:${ACTIVE_ROOTFS}/usr/lib:${ACTIVE_ROOTFS}/lib"
-if [[ -n "${LD_LIBRARY_PATH:-}" ]]; then
-    RUNTIME_LD_LIBRARY_PATH="${RUNTIME_LD_LIBRARY_PATH}:${LD_LIBRARY_PATH}"
+# Copy config to bundle
+cp -f "${OUTPUT_CONFIG}" "${BUNDLE_CONFIG}"
+
+cleanup() {
+    set +e
+    echo "[*] Cleaning up..."
+    ${SUDO} runc delete -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+    if [[ ${BIND_MOUNTED:-0} -eq 1 ]] && mountpoint -q "${BUNDLE_ROOTFS}"; then
+        ${SUDO} umount "${BUNDLE_ROOTFS}" >/dev/null 2>&1 || true
+    fi
+}
+trap cleanup EXIT
+
+# Start runc container
+echo "[*] Starting hardened runc container: ${CONTAINER_NAME}"
+(
+    cd "${BUNDLE_DIR}"
+    ${SUDO} runc delete -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+    ${SUDO} runc run -d "${CONTAINER_NAME}"
+)
+
+if ! ${SUDO} runc list | awk 'NR>1 {print $1}' | grep -Fxq "${CONTAINER_NAME}"; then
+    echo "[ERROR] container did not start: ${CONTAINER_NAME}"
+    exit 1
 fi
+echo "[+] Container is running: ${CONTAINER_NAME}"
+
+# Start llama-server inside container
+echo "[*] Starting llama-server with UDS socket"
+# Detect architecture for LD_LIBRARY_PATH
+ARCH="$(uname -m)"
+case "${ARCH}" in
+    aarch64|arm64)
+        RUNTIME_LD_LIBRARY_PATH="/opt/llama.cpp/build/bin:/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu:/usr/lib:/lib"
+        ;;
+    x86_64|amd64)
+        RUNTIME_LD_LIBRARY_PATH="/opt/llama.cpp/build/bin:/usr/lib/x86_64-linux-gnu:/lib/x86_64-linux-gnu:/usr/lib:/lib"
+        ;;
+    *)
+        RUNTIME_LD_LIBRARY_PATH="/opt/llama.cpp/build/bin:/usr/lib:/lib"
+        ;;
+esac
+
+${SUDO} runc exec -d "${CONTAINER_NAME}" /bin/sh -lc \
+    "env LD_LIBRARY_PATH=${RUNTIME_LD_LIBRARY_PATH} \
+     /opt/llama.cpp/build/bin/llama-server \
+     -m /models/model.gguf \
+     --host /sockets/llama.sock \
+     --port 8080 \
+     --ctx-size 2048 \
+     --threads 2 \
+     > /sockets/llama-server.log 2>&1"
+
+# Wait for socket to be created and server to be ready
+echo "[*] Waiting for UDS socket to be ready..."
+socket_ready=0
+for i in $(seq 1 ${SERVER_TIMEOUT}); do
+    if [[ -S "${SOCKET_PATH}" ]]; then
+        # Give server a moment to fully initialize after socket creation
+        sleep 2
+        socket_ready=1
+        echo "[+] Socket file detected (attempt ${i})"
+        break
+    fi
+    # Show progress every 10 seconds
+    if (( i % 10 == 0 )); then
+        echo "[*] Still waiting... (${i}s)"
+        ${SUDO} runc exec "${CONTAINER_NAME}" tail -5 /sockets/llama-server.log 2>/dev/null || true
+    fi
+    sleep 1
+done
+
+if [[ ${socket_ready} -ne 1 ]]; then
+    echo "[ERROR] llama-server socket not ready after ${SERVER_TIMEOUT}s"
+    ${SUDO} runc exec "${CONTAINER_NAME}" cat /sockets/llama-server.log > "${OUTPUT_SERVER_LOG}" 2>&1 || true
+    cat "${OUTPUT_SERVER_LOG}" >&2
+    echo ""
+    echo "[DEBUG] Socket file status:"
+    ls -la "${SOCKET_PATH}" 2>&1 || true
+    echo ""
+    echo "[DEBUG] Container processes:"
+    ${SUDO} runc exec "${CONTAINER_NAME}" ps aux 2>&1 || true
+    exit 1
+fi
+echo "[+] UDS socket is ready: ${SOCKET_PATH}"
+
+# Copy server log
+${SUDO} runc exec "${CONTAINER_NAME}" cat /sockets/llama-server.log > "${OUTPUT_SERVER_LOG}" 2>&1 || true
+
+# Show server log for debugging
+echo "[DEBUG] llama-server log:"
+${SUDO} runc exec "${CONTAINER_NAME}" tail -20 /sockets/llama-server.log || true
+
+# Send inference request via UDS
+echo "[*] Sending inference request via UDS"
 
 set +e
-env LD_LIBRARY_PATH="${RUNTIME_LD_LIBRARY_PATH}" \
-    "${ACTIVE_ROOTFS}/opt/llama.cpp/build/bin/llama-cli" \
-    -m "${INPUT_MODEL}" \
-    -p "${PROMPT_TEXT}" \
-    -n 48 \
-    --temp 0.2 \
-    --seed 42 \
-    --single-turn \
-    --simple-io \
-    > "${OUTPUT_ANSWER}" \
-    2> "${OUTPUT_ERROR}"
-llama_status=$?
+# Use sudo for curl if socket is owned by root and we're not root
+if [[ -S "${SOCKET_PATH}" ]] && [[ "$(stat -c %U "${SOCKET_PATH}" 2>/dev/null)" == "root" ]] && [[ "$(id -u)" -ne 0 ]]; then
+    echo "[DEBUG] Running curl with sudo (socket owned by root)"
+    http_code=$(${SUDO} curl --unix-socket "${SOCKET_PATH}" \
+        -X POST http://localhost/v1/chat/completions \
+        -H "Content-Type: application/json" \
+        -d "{
+            \"messages\": [{\"role\": \"user\", \"content\": \"${PROMPT_TEXT}\"}],
+            \"max_tokens\": 48,
+            \"temperature\": 0.2,
+            \"seed\": 42
+        }" \
+        -s -o "${OUTPUT_ANSWER}" \
+        -w "%{http_code}" \
+        --max-time 30 \
+        2> "${OUTPUT_ERROR}")
+    curl_status=$?
+else
+    http_code=$(curl --unix-socket "${SOCKET_PATH}" \
+        -X POST http://localhost/v1/chat/completions \
+        -H "Content-Type: application/json" \
+        -d "{
+            \"messages\": [{\"role\": \"user\", \"content\": \"${PROMPT_TEXT}\"}],
+            \"max_tokens\": 48,
+            \"temperature\": 0.2,
+            \"seed\": 42
+        }" \
+        -s -o "${OUTPUT_ANSWER}" \
+        -w "%{http_code}" \
+        --max-time 30 \
+        2> "${OUTPUT_ERROR}")
+    curl_status=$?
+fi
 set -e
 
-if [[ ${llama_status} -ne 0 ]] || ! grep -q '[[:alnum:]]' "${OUTPUT_ANSWER}"; then
-    echo "[ERROR] hardened direct llama run failed (exit=${llama_status})"
-    if [[ -s "${OUTPUT_ERROR}" ]]; then
-        cat "${OUTPUT_ERROR}" >&2
-    fi
+echo "[DEBUG] curl_status=${curl_status}, http_code=${http_code}"
+echo "[DEBUG] llama-answer.txt content:"
+cat "${OUTPUT_ANSWER}" 2>&1 || true
+echo ""
+echo "[DEBUG] llama-error.txt content:"
+cat "${OUTPUT_ERROR}" 2>&1 || true
+
+${SUDO} runc list > "${OUTPUT_RUNC_LIST}" 2>&1 || true
+
+if [[ ${curl_status} -ne 0 ]] || [[ "${http_code}" != "200" ]]; then
+    echo "[ERROR] UDS inference failed (curl_status=${curl_status}, http_code=${http_code})"
+    [[ -s "${OUTPUT_ERROR}" ]] && cat "${OUTPUT_ERROR}" >&2
+    [[ -s "${OUTPUT_ANSWER}" ]] && cat "${OUTPUT_ANSWER}" >&2
     exit 1
 fi
 
-echo "llama_hardened_prompt=direct_success" >> "${OUTPUT_SUMMARY}"
-echo "llama_hardened_exit=${llama_status}" >> "${OUTPUT_SUMMARY}"
+if ! grep -q '[[:alnum:]]' "${OUTPUT_ANSWER}"; then
+    echo "[ERROR] llama-server produced empty output"
+    cat "${OUTPUT_ERROR}" >&2
+    exit 1
+fi
 
+echo "[+] llama-server inference succeeded via UDS"
+echo "llama_hardened_prompt=uds_success" >> "${OUTPUT_SUMMARY}"
+echo "llama_hardened_exit=0" >> "${OUTPUT_SUMMARY}"
+echo "llama_server_mode=uds" >> "${OUTPUT_SUMMARY}"
+echo "llama_socket_path=${SOCKET_PATH}" >> "${OUTPUT_SUMMARY}"
+
+# Prepare chain handoff artifacts
 rm -rf "${OUTPUT_ROOTFS}"
 mkdir -p "${OUTPUT_ROOTFS}"
 ${SUDO} tar \

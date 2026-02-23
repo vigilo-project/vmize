@@ -65,18 +65,18 @@ apt_install_deps() {
     ${SUDO} env DEBIAN_FRONTEND=noninteractive apt-get -qq install -y --no-install-recommends \
         attr \
         cryptsetup-bin \
+        curl \
         ima-evm-utils \
         jq \
         keyutils \
         runc \
-        socat \
         squashfs-tools \
         util-linux
 }
 
 apt_has_candidate() {
     local pkg candidate
-    for pkg in attr cryptsetup-bin ima-evm-utils jq keyutils runc socat squashfs-tools util-linux; do
+    for pkg in attr cryptsetup-bin curl ima-evm-utils jq keyutils runc squashfs-tools util-linux; do
         candidate="$(apt-cache policy "${pkg}" | awk '/Candidate:/ {print $2; exit}')"
         if [[ -z "${candidate}" || "${candidate}" == "(none)" ]]; then
             echo "[!] Package '${pkg}' has no candidate in apt cache"

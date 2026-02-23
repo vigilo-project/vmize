@@ -64,13 +64,15 @@ apt_update() {
 apt_install_deps() {
     ${SUDO} env DEBIAN_FRONTEND=noninteractive apt-get -qq install -y --no-install-recommends \
         jq \
+        curl \
+        runc \
         libgomp1 \
         libstdc++6
 }
 
 apt_has_candidate() {
     local pkg candidate
-    for pkg in jq libgomp1 libstdc++6; do
+    for pkg in jq curl runc libgomp1 libstdc++6; do
         candidate="$(apt-cache policy "${pkg}" | awk '/Candidate:/ {print $2; exit}')"
         if [[ -z "${candidate}" || "${candidate}" == "(none)" ]]; then
             echo "[!] Package '${pkg}' has no candidate in apt cache"

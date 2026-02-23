@@ -4,6 +4,7 @@ set -euo pipefail
 BUNDLE_DIR="/tmp/vmize-worker/work/bundle"
 ARTIFACT_DIR="${BUNDLE_DIR}/artifacts"
 MODELS_DIR="${BUNDLE_DIR}/models"
+SOCKETS_DIR="${BUNDLE_DIR}/sockets"
 
 if [[ "$(id -u)" -ne 0 ]]; then
     SUDO="sudo"
@@ -103,5 +104,5 @@ with_retries "apt-get update" apt_update
 echo "[*] Installing host dependencies for runc workflow"
 with_retries "apt-get update/install dependencies" apt_update_and_install
 
-mkdir -p "${ARTIFACT_DIR}" "${MODELS_DIR}"
+mkdir -p "${ARTIFACT_DIR}" "${MODELS_DIR}" "${SOCKETS_DIR}"
 echo "[+] Bootstrap complete"

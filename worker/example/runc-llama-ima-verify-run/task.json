@@ -1,6 +1,6 @@
 {
   "name": "runc-llama-ima-verify-run",
-  "description": "Verify IMA-signed runtime tar with cert.der, then run llama on dm-verity rootfs and validate abstract UDS inference",
+  "description": "Verify IMA-signed runtime tar with cert.der, then run llama on dm-verity rootfs and validate UDS inference",
   "disk_size": "20G",
   "commands": [
     "00_bootstrap.sh",
@@ -9,7 +9,7 @@
   "artifacts": [
     "llama-answer.txt",
     "llama-error.txt",
-    "llama-service.log",
+    "llama-server.log",
     "runtime-summary.txt",
     "runc-list.txt",
     "prompt.txt",
