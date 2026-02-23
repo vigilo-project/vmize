@@ -192,6 +192,17 @@ cargo test -p worker --test integration
 - Stage2, stage3, stage4, and stage5 are configured with `"disk_size": "20G"` to absorb large handoff payloads.
 - If `No space left on device` appears, verify each task JSON keeps `disk_size` at least `20G`.
 
+6. DNS / Network resolution failures
+- If container apt-get fails with "Temporary failure resolving":
+  - The container has no network namespace isolation but lacks DNS configuration
+  - Stage1's `20_run_basic.sh` copies guest VM's `/etc/resolv.conf` into container
+  - Verify: `runc exec <container> nslookup archive.ubuntu.com` should succeed
+- Root cause: runc containers don't inherit host/guest DNS settings automatically
+- Solution pattern (used in 20_run_basic.sh):
+  ```bash
+  ${SUDO} cat /etc/resolv.conf | run_exec "cat > /etc/resolv.conf"
+  ```
+
 ## Change Log
 
 Record one entry for every Task Chain-related update.
@@ -434,3 +445,20 @@ Entry format:
 - `test -s /Users/sangwan/dev/vmize/worker/example/runc-llama-verity-run/output/cert.der` -> pass
 - `test -s /Users/sangwan/dev/vmize/worker/example/runc-llama-ima-verify-run/output/llama-answer.txt` -> pass
 - `test -s /Users/sangwan/dev/vmize/worker/example/runc-llama-ima-verify-run/output/ima-verify.log` -> pass
+
+### 2026-02-23 (DNS resolution fix for runc containers)
+
+1. Reason
+- Fix DNS resolution failures inside runc containers that prevented package installation.
+
+2. Modified files
+- `/home/sangwan/github/vmize/worker/example/runc-llama-build/input/20_run_basic.sh`
+
+3. Behavioral changes
+- Stage1 now copies guest VM's `/etc/resolv.conf` into runc container before installing dependencies
+- Added DNS resolution check with fallback to update resolv.conf if needed
+- Removed hardcoded DNS servers (1.1.1.1, 8.8.8.8) in favor of guest VM's actual DNS settings
+
+4. Verification commands and results
+- `./target/release/vmize task /home/sangwan/github/vmize/worker/example/runc-llama-build` -> pass (5-step chain)
+- `test -s /home/sangwan/github/vmize/worker/example/runc-llama-ima-verify-run/output/llama-answer.txt` -> pass
