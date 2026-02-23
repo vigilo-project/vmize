@@ -50,10 +50,10 @@ cargo build --release
 ./target/release/vmize task worker/example/ima-sign
 
 # runc-llama Task Chain:
-#   step1: runc-llama-build (HTTP prompt flow)
-#   step2: runc-llama-hardened (hardened config for UDS-oriented stage)
+#   step1: runc-llama-build (llama-server with UDS inference)
+#   step2: runc-llama-hardened (hardened config + llama-server UDS)
 #   step3: runc-llama-verity-pack (squashfs + dm-verity artifact packaging)
-#   step4: runc-llama-verity-run (runtime smoke/UDS check + IMA-sign + xattr tar packaging)
+#   step4: runc-llama-verity-run (runtime UDS check + IMA-sign + xattr tar packaging)
 #   step5: runc-llama-ima-verify-run (verify tar+cert with IMA, then run UDS inference)
 ./target/release/vmize task worker/example/runc-llama-build
 ```

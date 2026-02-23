@@ -14,13 +14,14 @@ Use this file as the canonical record for Task Chain behavior, contracts, troubl
 
 1. `runc-llama-build`
 - Builds and runs llama on top of runc.
-- Uses guest-to-container HTTP prompt flow.
+- Uses llama-server with Unix Domain Socket (UDS) for API-based inference.
 - Produces base artifacts for downstream stages.
 
 2. `runc-llama-hardened`
 - Consumes build artifacts from the upstream stage.
 - Applies capability minimization and hardened runtime-oriented config updates.
-- Keeps direct llama run validation, then hands off `rootfs/config/model` for verity packaging.
+- Runs llama-server with UDS inside runc container for inference validation.
+- Hands off `rootfs/config/model` for verity packaging.
 
 3. `runc-llama-verity-pack`
 - Consumes hardened `rootfs/config/model` artifacts.
@@ -30,13 +31,13 @@ Use this file as the canonical record for Task Chain behavior, contracts, troubl
 4. `runc-llama-verity-run`
 - Consumes stage3 verity artifacts and opens dm-verity mapping at runtime.
 - Mounts verified squashfs rootfs and runs runc using patched config.
-- Validates guest-to-container abstract UDS prompt flow.
+- Runs llama-server with UDS for inference validation.
 - After runtime check, signs handoff payload with IMA and emits xattr-preserving tar + verification cert.
 
 5. `runc-llama-ima-verify-run`
 - Consumes stage4 signed tar + verification cert.
 - Extracts payload with xattrs, verifies IMA signatures, and fails closed on verification errors.
-- Runs runc from verified payload and validates abstract UDS inference (`llama-answer.txt`).
+- Runs llama-server with UDS from verified payload for inference validation (`llama-answer.txt`).
 
 ## Related Independent Validation Task
 
@@ -115,7 +116,7 @@ Use this file as the canonical record for Task Chain behavior, contracts, troubl
   - creates loop devices for squashfs/hash payload
   - validates and opens dm-verity mapping
   - mounts verified squashfs rootfs
-  - runs `runc` and serves llama inference via abstract UDS
+  - runs llama-server with UDS for inference
 - Output artifacts (`task.json`):
   - `signed-runtime.tar` (IMA signed payload archive with xattrs)
   - `cert.der` (verification key for downstream stage)
@@ -130,11 +131,11 @@ Use this file as the canonical record for Task Chain behavior, contracts, troubl
   - extracts tar with xattrs restored
   - verifies IMA signatures on `rootfs.squashfs/rootfs.verity/rootfs.root_hash/config.json/model.gguf`
   - opens and mounts dm-verity payload only after IMA verify success
-  - runs `runc` and serves llama inference via abstract UDS
+  - runs llama-server with UDS for inference
 - Output artifacts (`task.json`):
   - `llama-answer.txt`
   - `llama-error.txt`
-  - `llama-service.log`
+  - `llama-server.log`
   - `runtime-summary.txt`
   - `runc-list.txt`
   - `prompt.txt`
@@ -183,10 +184,10 @@ cargo test -p worker --test integration
 
 4. Runtime dependency failures
 - Validate bootstrap dependencies:
-  - step1/step2: `jq`, `runc`, `wget`, `tar`, etc.
+  - step1/step2: `jq`, `runc`, `curl`, `wget`, `tar`, etc.
   - step3: `squashfs-tools`, `cryptsetup-bin`, `jq`
-  - step4: `runc`, `cryptsetup-bin`, `squashfs-tools`, `util-linux`, `socat`, `jq`, `ima-evm-utils`, `openssl`
-  - step5: `runc`, `cryptsetup-bin`, `squashfs-tools`, `util-linux`, `socat`, `jq`, `ima-evm-utils`, `tar`
+  - step4: `runc`, `cryptsetup-bin`, `squashfs-tools`, `util-linux`, `curl`, `jq`, `ima-evm-utils`, `openssl`
+  - step5: `runc`, `cryptsetup-bin`, `squashfs-tools`, `util-linux`, `curl`, `jq`, `ima-evm-utils`, `tar`
 
 5. Disk size / space failures
 - Stage2, stage3, stage4, and stage5 are configured with `"disk_size": "20G"` to absorb large handoff payloads.
@@ -462,3 +463,37 @@ Entry format:
 4. Verification commands and results
 - `./target/release/vmize task /home/sangwan/github/vmize/worker/example/runc-llama-build` -> pass (5-step chain)
 - `test -s /home/sangwan/github/vmize/worker/example/runc-llama-ima-verify-run/output/llama-answer.txt` -> pass
+
+### 2026-02-24 (llama-server with UDS integration)
+
+1. Reason
+- Replace llama-cli with llama-server using Unix Domain Sockets across all stages for API-based inference similar to vLLM.
+
+2. Modified files
+- `worker/example/runc-llama-build/input/00_bootstrap.sh`
+- `worker/example/runc-llama-build/input/10_build_bundle.sh`
+- `worker/example/runc-llama-build/input/20_run_basic.sh`
+- `worker/example/runc-llama-build/input/30_verify.sh`
+- `worker/example/runc-llama-hardened/input/00_bootstrap.sh`
+- `worker/example/runc-llama-hardened/input/10_minimize_config.sh`
+- `worker/example/runc-llama-ima-verify-run/input/00_bootstrap.sh`
+- `worker/example/runc-llama-ima-verify-run/input/10_verify_and_run.sh`
+- `worker/example/runc-llama-ima-verify-run/task.json`
+- `worker/example/runc-llama-verity-run/input/00_bootstrap.sh`
+- `worker/example/runc-llama-verity-run/input/10_run_verity_uds.sh`
+
+3. Behavioral changes
+- All stages now build and run llama-server instead of llama-cli
+- Added `/sockets` bind mount to config.json for UDS communication
+- llama-server binds to `/sockets/llama.sock` using `--host /sockets/llama.sock`
+- HTTP API inference via curl with `--unix-socket` option
+- Added curl dependency to all bootstrap scripts
+- Added architecture detection for LD_LIBRARY_PATH (x86_64/aarch64)
+- Socket permissions handled with sudo for root-owned sockets
+- Fixed artifact name: `llama-service.log` -> `llama-server.log`
+- Removed socat dependency (no longer needed for UDS)
+
+4. Verification commands and results
+- `cargo run --bin vmize -- task worker/example/runc-llama-build` -> pass (5-step chain)
+- All stages produce valid `llama-answer.txt` with inference results
+- Stage artifacts properly handed off between chain steps
