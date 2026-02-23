@@ -12,11 +12,14 @@
     "ima-verify.log",
     "ima-negative.log",
     "ima-http-roundtrip.log",
+    "ima-no-xattr.log",
     "signed-xattr.txt",
     "cert.der",
     "sample-a.txt",
     "sample-b.bin",
     "signed-http.tar",
-    "downloaded-signed-http.tar"
+    "downloaded-signed-http.tar",
+    "no-xattr.tar",
+    "downloaded-no-xattr.tar"
   ]
 }

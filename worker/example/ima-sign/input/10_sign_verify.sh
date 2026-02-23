@@ -8,6 +8,7 @@ SIGNED_DIR="${TMP_DIR}/signed"
 HTTP_ROOT="${TMP_DIR}/http-root"
 DOWNLOAD_DIR="${TMP_DIR}/download"
 EXTRACT_DIR="${TMP_DIR}/extract"
+NO_XATTR_DIR="${TMP_DIR}/no-xattr-extract"
 
 SAMPLE_A="${SIGNED_DIR}/sample-a.txt"
 SAMPLE_B="${SIGNED_DIR}/sample-b.bin"
@@ -20,11 +21,13 @@ SIGN_LOG="${TMP_DIR}/ima-sign.log"
 VERIFY_LOG="${TMP_DIR}/ima-verify.log"
 NEGATIVE_LOG="${TMP_DIR}/ima-negative.log"
 ROUNDTRIP_LOG="${TMP_DIR}/ima-http-roundtrip.log"
+NO_XATTR_LOG="${TMP_DIR}/ima-no-xattr.log"
 XATTR_LOG="${TMP_DIR}/signed-xattr.txt"
 SUMMARY_FILE="${OUT_DIR}/ima-sign-summary.txt"
 
 SIGNED_TAR="${HTTP_ROOT}/signed-http.tar"
 DOWNLOADED_TAR="${DOWNLOAD_DIR}/downloaded-signed-http.tar"
+NO_XATTR_TAR="${HTTP_ROOT}/no-xattr.tar"
 
 SERVER_PID=""
 HTTP_PORT=""
@@ -82,17 +85,19 @@ dump_security_ima_xattr() {
     local target="$2"
     {
         echo "### ${label}"
+        set +e
         if [[ -n "${SUDO}" ]]; then
-            ${SUDO} getfattr -m . -n security.ima -e hex "${target}"
+            ${SUDO} getfattr -m . -n security.ima -e hex "${target}" 2>&1
         else
-            getfattr -m . -n security.ima -e hex "${target}"
+            getfattr -m . -n security.ima -e hex "${target}" 2>&1
         fi
+        set -e
         echo
     } >> "${XATTR_LOG}"
 }
 
 rm -rf "${TMP_DIR}"
-mkdir -p "${SIGNED_DIR}" "${HTTP_ROOT}" "${DOWNLOAD_DIR}" "${EXTRACT_DIR}"
+mkdir -p "${SIGNED_DIR}" "${HTTP_ROOT}" "${DOWNLOAD_DIR}" "${EXTRACT_DIR}" "${NO_XATTR_DIR}"
 
 ensure_ima_runtime_available
 
@@ -106,6 +111,7 @@ openssl x509 -in "${CERT_PEM}" -outform DER -out "${CERT_DER}" >/dev/null 2>&1
 : > "${VERIFY_LOG}"
 : > "${NEGATIVE_LOG}"
 : > "${ROUNDTRIP_LOG}"
+: > "${NO_XATTR_LOG}"
 : > "${XATTR_LOG}"
 
 for target in "${SAMPLE_A}" "${SAMPLE_B}"; do
@@ -195,16 +201,96 @@ for target_name in sample-a.txt sample-b.bin; do
     dump_security_ima_xattr "roundtrip:${target_name}" "${extracted_target}"
 done
 
+echo "[*] Stopping HTTP server after positive roundtrip test"
+if [[ -n "${SERVER_PID}" ]]; then
+    kill "${SERVER_PID}" >/dev/null 2>&1 || true
+    wait "${SERVER_PID}" >/dev/null 2>&1 || true
+    SERVER_PID=""
+fi
+
+echo "[*] Negative test: packing without xattrs" | tee -a "${NO_XATTR_LOG}"
+if [[ -n "${SUDO}" ]]; then
+    ${SUDO} tar --numeric-owner --format=posix -cpf "${NO_XATTR_TAR}" -C "${SIGNED_DIR}" sample-a.txt sample-b.bin >> "${NO_XATTR_LOG}" 2>&1
+else
+    tar --numeric-owner --format=posix -cpf "${NO_XATTR_TAR}" -C "${SIGNED_DIR}" sample-a.txt sample-b.bin >> "${NO_XATTR_LOG}" 2>&1
+fi
+
+echo "[*] Restarting HTTP server for no-xattr test" | tee -a "${NO_XATTR_LOG}"
+HTTP_PORT="$(python3 - <<'PY'
+import socket
+sock = socket.socket()
+sock.bind(("127.0.0.1", 0))
+print(sock.getsockname()[1])
+sock.close()
+PY
+)"
+
+python3 -m http.server "${HTTP_PORT}" --bind 127.0.0.1 --directory "${HTTP_ROOT}" > "${TMP_DIR}/http-server-no-xattr.log" 2>&1 &
+SERVER_PID=$!
+
+server_ready=0
+for _ in $(seq 1 20); do
+    if curl -fsS "http://127.0.0.1:${HTTP_PORT}/no-xattr.tar" -o /dev/null >/dev/null 2>&1; then
+        server_ready=1
+        break
+    fi
+    sleep 1
+done
+
+if [[ ${server_ready} -ne 1 ]]; then
+    echo "[ERROR] HTTP server failed to serve no-xattr.tar" | tee -a "${NO_XATTR_LOG}" >&2
+    exit 1
+fi
+
+NO_XATTR_DOWNLOADED="${DOWNLOAD_DIR}/downloaded-no-xattr.tar"
+echo "[*] Downloading no-xattr tar over HTTP" | tee -a "${NO_XATTR_LOG}"
+curl -fsSLo "${NO_XATTR_DOWNLOADED}" "http://127.0.0.1:${HTTP_PORT}/no-xattr.tar" >> "${NO_XATTR_LOG}" 2>&1
+
+echo "[*] Extracting no-xattr tar (without xattrs)" | tee -a "${NO_XATTR_LOG}"
+if [[ -n "${SUDO}" ]]; then
+    ${SUDO} tar -xpf "${NO_XATTR_DOWNLOADED}" -C "${NO_XATTR_DIR}" >> "${NO_XATTR_LOG}" 2>&1
+else
+    tar -xpf "${NO_XATTR_DOWNLOADED}" -C "${NO_XATTR_DIR}" >> "${NO_XATTR_LOG}" 2>&1
+fi
+
+no_xattr_verify_failed=0
+for target_name in sample-a.txt sample-b.bin; do
+    no_xattr_target="${NO_XATTR_DIR}/${target_name}"
+    [[ -f "${no_xattr_target}" ]] || { echo "[ERROR] Missing extracted file: ${no_xattr_target}" | tee -a "${NO_XATTR_LOG}" >&2; exit 1; }
+
+    echo "[*] Attempting to verify extracted (no-xattr) ${no_xattr_target}" | tee -a "${NO_XATTR_LOG}"
+    set +e
+    verify_signed_with_cert "${no_xattr_target}" >> "${NO_XATTR_LOG}" 2>&1
+    no_xattr_status=$?
+    set -e
+
+    if [[ ${no_xattr_status} -eq 0 ]]; then
+        echo "[ERROR] no-xattr file verification unexpectedly succeeded (should have no security.ima)" | tee -a "${NO_XATTR_LOG}" >&2
+        no_xattr_verify_failed=1
+    else
+        echo "[*] No-xattr verification failed as expected (status=${no_xattr_status})" | tee -a "${NO_XATTR_LOG}"
+    fi
+    dump_security_ima_xattr "no-xattr:${target_name}" "${no_xattr_target}"
+done
+
+if [[ ${no_xattr_verify_failed} -eq 1 ]]; then
+    exit 1
+fi
+
+
 cp -f "${SIGN_LOG}" "${OUT_DIR}/ima-sign.log"
 cp -f "${VERIFY_LOG}" "${OUT_DIR}/ima-verify.log"
 cp -f "${NEGATIVE_LOG}" "${OUT_DIR}/ima-negative.log"
 cp -f "${ROUNDTRIP_LOG}" "${OUT_DIR}/ima-http-roundtrip.log"
+cp -f "${NO_XATTR_LOG}" "${OUT_DIR}/ima-no-xattr.log"
 cp -f "${XATTR_LOG}" "${OUT_DIR}/signed-xattr.txt"
 cp -f "${CERT_DER}" "${OUT_DIR}/cert.der"
 cp -f "${SAMPLE_A}" "${OUT_DIR}/sample-a.txt"
 cp -f "${SAMPLE_B}" "${OUT_DIR}/sample-b.bin"
 cp -f "${SIGNED_TAR}" "${OUT_DIR}/signed-http.tar"
 cp -f "${DOWNLOADED_TAR}" "${OUT_DIR}/downloaded-signed-http.tar"
+cp -f "${NO_XATTR_TAR}" "${OUT_DIR}/no-xattr.tar"
+cp -f "${NO_XATTR_DOWNLOADED}" "${OUT_DIR}/downloaded-no-xattr.tar"
 
 {
     echo "mode=debug-verify"
@@ -216,6 +302,9 @@ cp -f "${DOWNLOADED_TAR}" "${OUT_DIR}/downloaded-signed-http.tar"
     echo "tar_bundle=tar --xattrs --xattrs-include='*' --format=posix"
     echo "http_roundtrip=success"
     echo "http_roundtrip_verify=success"
+    echo "no_xattr_tar=tar (without --xattrs)"
+    echo "no_xattr_verify: expected failure"
+    echo "no_xattr_verify_failed=${no_xattr_verify_failed}"
 } > "${SUMMARY_FILE}"
 
 rm -f "${KEY_PEM}" "${CERT_PEM}" "${TAMPERED_A}"
