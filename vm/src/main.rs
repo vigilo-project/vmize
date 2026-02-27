@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use vm::{RunOptions, cp, ps, rm, run, ssh, ssh_stream};
 
@@ -40,6 +41,14 @@ enum Commands {
         /// Custom image URL
         #[arg(long)]
         image_url: Option<String>,
+
+        /// Custom kernel image path (direct kernel boot)
+        #[arg(long)]
+        kernel: Option<PathBuf>,
+
+        /// Rootfs disk image for custom kernel boot
+        #[arg(long)]
+        rootfs: Option<PathBuf>,
 
         /// Show QEMU verbose output
         #[arg(long, default_value = "false")]
@@ -112,6 +121,8 @@ async fn main() -> Result<()> {
             disk_size,
             force_download,
             image_url,
+            kernel,
+            rootfs,
             verbose,
         } => {
             let options = RunOptions {
@@ -121,6 +132,8 @@ async fn main() -> Result<()> {
                 disk_size,
                 force_download,
                 image_url,
+                kernel,
+                rootfs,
                 verbose,
                 ..Default::default()
             };

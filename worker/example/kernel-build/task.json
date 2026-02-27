@@ -1,0 +1,12 @@
+{
+  "name": "kernel-build",
+  "description": "Build a Linux kernel image using default architecture config and export it as task artifact",
+  "disk_size": "40G",
+  "commands": [
+    "00_build_kernel.sh"
+  ],
+  "artifacts": [
+    "kernel",
+    "kernel-build-info.txt"
+  ]
+}

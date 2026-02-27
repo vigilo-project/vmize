@@ -1,9 +1,10 @@
 use crate::cloud_init::{CloudInitSeed, IsoCreator};
 use crate::config::Config;
-use crate::image::{ImageDownloader, copy_disk_image};
+use crate::image::{ImageDownloader, copy_disk_image, detect_disk_format};
 use crate::platform::HostProfile;
 use crate::process::is_process_alive;
 use crate::progress::{StepProgress, sp_complete, sp_fail, sp_start};
+use crate::qemu::config::DiskFormat;
 use crate::qemu::{QemuConfig, QemuRunner};
 use crate::ssh::SshClient;
 use crate::vm::{
@@ -29,6 +30,8 @@ pub struct RunOptions {
     pub disk_size: Option<String>,
     pub force_download: bool,
     pub image_url: Option<String>,
+    pub kernel: Option<PathBuf>,
+    pub rootfs: Option<PathBuf>,
     pub verbose: bool,
     /// Show indicatif progress spinners during VM startup.
     /// Defaults to `true`. Set to `false` to suppress terminal UI
@@ -48,6 +51,8 @@ impl Default for RunOptions {
             disk_size: None,
             force_download: false,
             image_url: None,
+            kernel: None,
+            rootfs: None,
             verbose: false,
             show_progress: true,
             on_progress: None,
@@ -409,10 +414,29 @@ async fn run_vm_inner(config: &Config, options: RunOptions) -> Result<VmRecord> 
     let cpus = options.cpus.unwrap_or(2);
     let disk_size = options.disk_size;
     let force_download = options.force_download;
+    let kernel = options.kernel;
+    let rootfs = options.rootfs;
     let verbose = options.verbose;
     let show_progress = options.show_progress;
     let on_progress = options.on_progress;
     let custom_image_url = options.image_url;
+
+    let use_custom_kernel = match (&kernel, &rootfs) {
+        (Some(_), Some(_)) => true,
+        (None, None) => false,
+        _ => bail!(
+            "kernel and rootfs must be provided together, or neither one to use the default cloud image flow"
+        ),
+    };
+
+    if use_custom_kernel {
+        if custom_image_url.is_some() {
+            bail!("image-url must not be used with custom kernel/rootfs mode");
+        }
+        if disk_size.is_some() {
+            bail!("disk-size must not be used with custom kernel/rootfs mode");
+        }
+    }
 
     let hostname = "vm".to_string();
     let mut sp = if verbose || !show_progress {
@@ -446,8 +470,6 @@ async fn run_vm_inner(config: &Config, options: RunOptions) -> Result<VmRecord> 
     // Step 2: Directories
     sp_start(&mut sp, "Directories");
     notify_progress(&on_progress, 2, 8, "Directories");
-    let effective_image_url =
-        custom_image_url.unwrap_or_else(|| host_profile.image_url.to_string());
     config.ensure_base_dir()?;
     let base_dir = config.base_dir.display();
     log_progress(
@@ -466,15 +488,27 @@ async fn run_vm_inner(config: &Config, options: RunOptions) -> Result<VmRecord> 
     sp_complete(&mut sp, &format!("ready ({base_dir})"));
     notify_progress(&on_progress, 2, 8, "Directories — ready");
 
-    // Step 3: Cloud image
-    let (image_path, _downloaded) = prepare_cloud_image(
-        &effective_image_url,
-        &images_dir,
-        force_download,
-        &mut sp,
-        &on_progress,
-    )
-    .await?;
+    // Step 3: Cloud image or custom rootfs
+    let (image_path, _downloaded) = if use_custom_kernel {
+        let rootfs_path = rootfs.clone().expect("Validated rootfs");
+        sp_start(&mut sp, "Cloud image");
+        notify_progress(&on_progress, 3, 8, "Cloud image");
+        log_progress(3, 8, "Using custom rootfs for boot");
+        sp_complete(&mut sp, "ready");
+        notify_progress(&on_progress, 3, 8, "Cloud image — ready");
+        (rootfs_path, false)
+    } else {
+        let effective_image_url =
+            custom_image_url.unwrap_or_else(|| host_profile.image_url.to_string());
+        prepare_cloud_image(
+            &effective_image_url,
+            &images_dir,
+            force_download,
+            &mut sp,
+            &on_progress,
+        )
+        .await?
+    };
 
     // Step 4: SSH key pair
     sp_start(&mut sp, "SSH key pair");
@@ -553,26 +587,67 @@ async fn run_vm_inner(config: &Config, options: RunOptions) -> Result<VmRecord> 
     // Step 7: Disk image
     sp_start(&mut sp, "Disk image");
     notify_progress(&on_progress, 6, 8, "Disk image");
-    info!("Creating VM disk image...");
-    let vm_disk_path = vm_dir.join("disk.qcow2");
-    copy_disk_image(&image_path, &vm_disk_path, disk_size.as_deref())?;
+    let (vm_disk_path, disk_format) = if use_custom_kernel {
+        info!("Using provided rootfs as VM disk image...");
+        let vm_disk_path = image_path.clone();
+        let disk_format = detect_disk_format(&vm_disk_path)?;
+        (vm_disk_path, disk_format)
+    } else {
+        info!("Creating VM disk image...");
+        let vm_disk_path = vm_dir.join("disk.qcow2");
+        copy_disk_image(&image_path, &vm_disk_path, disk_size.as_deref())?;
+        (vm_disk_path, DiskFormat::Qcow2)
+    };
     sp_complete(&mut sp, "created");
     notify_progress(&on_progress, 6, 8, "Disk image — created");
+
+    let kernel_path = if use_custom_kernel {
+        kernel.clone().expect("Validated custom kernel path")
+    } else {
+        PathBuf::new()
+    };
+    let kernel_append = if use_custom_kernel {
+        match host_profile.arch {
+            "x86_64" => Some("root=/dev/vda rw rootfstype=ext4 console=ttyS0"),
+            "aarch64" => Some("root=/dev/vda rw rootfstype=ext4 console=ttyAMA0"),
+            _ => bail!(
+                "Unsupported host architecture for kernel boot: {}",
+                host_profile.arch
+            ),
+        }
+    } else {
+        None
+    };
+
+    // Disable EFI BIOS when booting a custom kernel directly.
+    let bios_path = if use_custom_kernel {
+        None
+    } else {
+        host_profile.bios_path.map(PathBuf::from)
+    };
 
     // Step 8: QEMU start
     sp_start(&mut sp, "Starting QEMU");
     notify_progress(&on_progress, 7, 8, "Starting QEMU");
     info!("Building QEMU configuration...");
-    let qemu_config = QemuConfig::from_host_profile(&host_profile)
+    let mut qemu_config = QemuConfig::from_host_profile(&host_profile)
+        .bios_path_opt(bios_path)
         .memory(memory.clone())
         .cpus(cpus)
         .disk_image(&vm_disk_path)
+        .disk_format(disk_format)
         .cloud_init_iso(&iso_path)
         .ssh_port(ssh_port)
         .pid_file(vm_dir.join("qemu.pid"))
         .name(vm_id.clone())
         .display(false)
         .daemonize(!verbose);
+
+    if use_custom_kernel {
+        qemu_config = qemu_config
+            .kernel_path(kernel_path)
+            .append(kernel_append.expect("kernel append must be set for custom kernel mode"));
+    }
 
     info!("Starting QEMU VM...");
     let mut runner = QemuRunner::new();

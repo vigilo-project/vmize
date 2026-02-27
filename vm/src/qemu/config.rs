@@ -4,6 +4,22 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// QEMU configuration builder
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DiskFormat {
+    #[default]
+    Qcow2,
+    Raw,
+}
+
+impl DiskFormat {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Qcow2 => "qcow2",
+            Self::Raw => "raw",
+        }
+    }
+}
+
 pub struct QemuConfig {
     qemu_binary: String,
     bios_path: Option<PathBuf>,
@@ -12,6 +28,9 @@ pub struct QemuConfig {
     memory: String,
     cpus: u32,
     disk_image: Option<PathBuf>,
+    kernel_path: Option<PathBuf>,
+    append: Option<String>,
+    disk_format: DiskFormat,
     cloud_init_iso: Option<PathBuf>,
     pid_file: Option<PathBuf>,
     qemu_name: Option<String>,
@@ -43,6 +62,9 @@ impl Default for QemuConfig {
             memory: "4G".to_string(),
             cpus: 2,
             disk_image: None,
+            kernel_path: None,
+            append: None,
+            disk_format: DiskFormat::Qcow2,
             cloud_init_iso: None,
             pid_file: None,
             qemu_name: None,
@@ -104,9 +126,27 @@ impl QemuConfig {
         self
     }
 
+    /// Set the output disk format
+    pub fn disk_format(mut self, disk_format: DiskFormat) -> Self {
+        self.disk_format = disk_format;
+        self
+    }
+
     /// Set the disk image path
     pub fn disk_image<P: AsRef<Path>>(mut self, path: P) -> Self {
         self.disk_image = Some(path.as_ref().to_path_buf());
+        self
+    }
+
+    /// Set the kernel image path
+    pub fn kernel_path<P: AsRef<Path>>(mut self, path: P) -> Self {
+        self.kernel_path = Some(path.as_ref().to_path_buf());
+        self
+    }
+
+    /// Set additional kernel command line arguments
+    pub fn append(mut self, append: impl Into<String>) -> Self {
+        self.append = Some(append.into());
         self
     }
 
@@ -166,8 +206,19 @@ impl QemuConfig {
 
         // Add disk image
         if let Some(disk) = &self.disk_image {
-            cmd.arg("-drive")
-                .arg(format!("file={},format=qcow2,if=virtio", disk.display()));
+            cmd.arg("-drive").arg(format!(
+                "file={},format={},if=virtio",
+                disk.display(),
+                self.disk_format.as_str()
+            ));
+        }
+
+        if let Some(kernel_path) = &self.kernel_path {
+            cmd.arg("-kernel").arg(kernel_path);
+        }
+
+        if let Some(append) = &self.append {
+            cmd.arg("-append").arg(append);
         }
 
         // Add cloud-init ISO
@@ -202,8 +253,10 @@ impl QemuConfig {
 
         // Daemonize if enabled
         if self.daemonize {
-            // Redirect serial to /dev/null when daemonizing
-            cmd.arg("-serial").arg("none");
+            // Keep the default serial device but discard its output.
+            // `none` removes serial devices entirely, which can break
+            // guests that rely on `console=ttyS0` / `console=ttyAMA0`.
+            cmd.arg("-serial").arg("null");
             cmd.arg("-daemonize");
         } else {
             // Use stdio for serial output when not daemonizing
@@ -246,6 +299,12 @@ impl QemuConfig {
             bail!("Cloud-init ISO does not exist: {}", iso.display());
         }
 
+        if let Some(kernel) = &self.kernel_path
+            && !kernel.exists()
+        {
+            bail!("Kernel image does not exist: {}", kernel.display());
+        }
+
         Ok(())
     }
 }
@@ -272,12 +331,16 @@ mod tests {
         assert!(config.ssh_port.is_none());
         assert!(!config.display);
         assert!(config.daemonize);
+        assert!(matches!(config.disk_format, DiskFormat::Qcow2));
+        assert!(config.kernel_path.is_none());
+        assert!(config.append.is_none());
     }
 
     #[test]
     fn test_qemu_config_builder() {
         let temp_file = NamedTempFile::new().unwrap();
         let temp_file2 = NamedTempFile::new().unwrap();
+        let temp_file3 = NamedTempFile::new().unwrap();
 
         let config = QemuConfig::new()
             .qemu_binary("qemu-system-x86_64".to_string())
@@ -285,6 +348,9 @@ mod tests {
             .memory("4G".to_string())
             .cpus(4)
             .disk_image(temp_file.path())
+            .disk_format(DiskFormat::Raw)
+            .kernel_path(temp_file3.path())
+            .append("console=ttyS0")
             .cloud_init_iso(temp_file2.path())
             .ssh_port(2222)
             .pid_file(temp_file.path())
@@ -299,6 +365,8 @@ mod tests {
         assert_eq!(config.qemu_binary, "qemu-system-x86_64");
         assert!(config.bios_path.is_none());
         assert_eq!(config.pid_file, Some(temp_file.path().to_path_buf()));
+        assert_eq!(config.disk_format, DiskFormat::Raw);
+        assert_eq!(config.append.as_deref(), Some("console=ttyS0"));
     }
 
     #[test]
@@ -310,6 +378,7 @@ mod tests {
             .qemu_binary("qemu-system-x86_64".to_string())
             .machine_type("q35,accel=kvm".to_string())
             .disk_image(temp_file.path())
+            .disk_format(DiskFormat::Qcow2)
             .cloud_init_iso(temp_file2.path())
             .ssh_port(2222)
             .pid_file(temp_file.path());
@@ -327,6 +396,30 @@ mod tests {
             args.iter()
                 .any(|arg| arg.contains(temp_file.path().to_string_lossy().as_ref()))
         );
+        assert!(args.iter().any(|arg| arg.contains("format=qcow2")));
+    }
+
+    #[test]
+    fn test_qemu_config_build_args_with_kernel() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let temp_file2 = NamedTempFile::new().unwrap();
+        let temp_file3 = NamedTempFile::new().unwrap();
+
+        let config = QemuConfig::new()
+            .qemu_binary("qemu-system-x86_64".to_string())
+            .machine_type("q35,accel=kvm".to_string())
+            .disk_image(temp_file.path())
+            .disk_format(DiskFormat::Raw)
+            .kernel_path(temp_file3.path())
+            .append("console=ttyS0")
+            .cloud_init_iso(temp_file2.path())
+            .ssh_port(2222)
+            .pid_file(temp_file.path());
+
+        let args = config.build_args().unwrap();
+        assert!(args.iter().any(|arg| arg.contains("-kernel")));
+        assert!(args.iter().any(|arg| arg.contains("console=ttyS0")));
+        assert!(args.iter().any(|arg| arg.contains("format=raw")));
     }
 
     #[test]
@@ -400,6 +493,25 @@ mod tests {
     }
 
     #[test]
+    fn test_qemu_config_validate_nonexistent_kernel() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let temp_kernel = PathBuf::from("/nonexistent/bzImage");
+        let config = QemuConfig::new()
+            .disk_image(temp_file.path())
+            .cloud_init_iso(temp_file.path())
+            .kernel_path(temp_kernel)
+            .append("console=ttyS0");
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Kernel image does not exist")
+        );
+    }
+
+    #[test]
     fn test_qemu_config_validate_valid() {
         let temp_file = NamedTempFile::new().unwrap();
         let temp_file2 = NamedTempFile::new().unwrap();
@@ -411,7 +523,7 @@ mod tests {
     }
 
     #[test]
-    fn test_qemu_config_daemonize_serial_none() {
+    fn test_qemu_config_daemonize_serial_null() {
         let temp_file = NamedTempFile::new().unwrap();
         let temp_file2 = NamedTempFile::new().unwrap();
 
@@ -423,7 +535,7 @@ mod tests {
         let args = config.build_args().unwrap();
         assert!(args.contains(&"-daemonize".to_string()));
         assert!(args.contains(&"-serial".to_string()));
-        assert!(args.contains(&"none".to_string()));
+        assert!(args.contains(&"null".to_string()));
     }
 
     #[test]

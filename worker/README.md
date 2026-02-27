@@ -48,6 +48,8 @@ cargo build --release
 ./target/release/vmize task example/runc
 ./target/release/vmize task example/runc-llama-build
 ./target/release/vmize task worker/example/ima-sign
+./target/release/vmize task worker/example/kernel-build
+./target/release/vmize task worker/example/rootfs-build
 
 # runc-llama Task Chain:
 #   step1: runc-llama-build (llama-server with UDS inference)

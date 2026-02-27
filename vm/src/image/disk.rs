@@ -1,7 +1,27 @@
 use anyhow::{Context, Result, bail};
+use std::io::{self, Read};
 use std::path::Path;
 use std::process::Command;
 use tracing::{debug, info};
+
+use crate::qemu::config::DiskFormat;
+
+pub fn detect_disk_format(path: &Path) -> Result<DiskFormat> {
+    let mut file = std::fs::File::open(path).context("Failed to open disk image")?;
+    let mut header = [0u8; 4];
+
+    match file.read_exact(&mut header) {
+        Ok(()) => {
+            if header == [b'Q', b'F', b'I', 0xFB] {
+                Ok(DiskFormat::Qcow2)
+            } else {
+                Ok(DiskFormat::Raw)
+            }
+        }
+        Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => Ok(DiskFormat::Raw),
+        Err(err) => Err(err).context("Failed to read disk image header"),
+    }
+}
 
 pub fn copy_disk_image(src: &Path, dest: &Path, disk_size: Option<&str>) -> Result<()> {
     info!(
@@ -72,6 +92,7 @@ fn resize_disk_image(path: &Path, size: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
     use std::str;
 
     fn qemu_img_available() -> bool {
@@ -110,6 +131,33 @@ mod tests {
         }
 
         bail!("virtual size not found in qemu-img output");
+    }
+
+    #[test]
+    fn test_detect_disk_format_qcow2() -> Result<()> {
+        let file = tempfile::NamedTempFile::new().context("Failed to create temp file")?;
+        file.as_file()
+            .write_all(&[b'Q', b'F', b'I', 0xFB])
+            .context("Failed to write qcow2 magic")?;
+
+        assert!(matches!(
+            detect_disk_format(file.path())?,
+            DiskFormat::Qcow2
+        ));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_detect_disk_format_raw() -> Result<()> {
+        let file = tempfile::NamedTempFile::new().context("Failed to create temp file")?;
+        file.as_file()
+            .write_all(b"this is not qcow2")
+            .context("Failed to write sample raw bytes")?;
+
+        assert!(matches!(detect_disk_format(file.path())?, DiskFormat::Raw));
+
+        Ok(())
     }
 
     #[test]

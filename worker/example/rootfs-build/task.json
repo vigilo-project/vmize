@@ -1,0 +1,12 @@
+{
+  "name": "rootfs-build",
+  "description": "Build a rootfs disk image (qcow2) from an Ubuntu cloud rootfs tarball",
+  "disk_size": "40G",
+  "commands": [
+    "00_build_rootfs.sh"
+  ],
+  "artifacts": [
+    "rootfs.qcow2",
+    "rootfs-build-info.txt"
+  ]
+}
