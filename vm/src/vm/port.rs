@@ -44,19 +44,18 @@ impl Drop for VmCreationLock {
     }
 }
 
-/// Check if a VM lock file is stale (process that created it is no longer alive).
-fn is_stale_vm_lock(lock_path: &Path) -> bool {
-    let lock_pid = match std::fs::read_to_string(lock_path) {
-        Ok(content) => match content.trim().parse::<u32>() {
-            Ok(pid) => pid,
-            Err(_) => return true, // Invalid PID, consider stale
-        },
-        Err(err) => {
-            return err.kind() == ErrorKind::NotFound;
-        }
+/// Check if a PID-based lock file is stale (the process that created it is no
+/// longer alive).  Returns `true` when the lock can safely be reclaimed.
+fn is_stale_pid_lock(lock_path: &Path) -> bool {
+    let content = match std::fs::read_to_string(lock_path) {
+        Ok(c) => c,
+        Err(err) => return err.kind() == ErrorKind::NotFound,
     };
 
-    !is_process_alive(lock_pid)
+    match content.trim().parse::<u32>() {
+        Ok(pid) => !is_process_alive(pid),
+        Err(_) => true, // Invalid PID, consider stale
+    }
 }
 
 /// Default timeout for VM creation lock acquisition (10 seconds).
@@ -99,7 +98,7 @@ fn acquire_vm_creation_lock_with_timeout(
             }
             Err(err) if err.kind() == ErrorKind::AlreadyExists => {
                 // Check for stale lock
-                if is_stale_vm_lock(&lock_path) {
+                if is_stale_pid_lock(&lock_path) {
                     // Remove stale lock and retry immediately
                     if let Err(e) = std::fs::remove_file(&lock_path) {
                         // Another process may have cleaned it up, just retry
@@ -231,22 +230,6 @@ pub fn ssh_port_lock_path(instances_dir: &Path, port: u16) -> PathBuf {
     ssh_port_locks_dir(instances_dir).join(format!("{}.lock", port))
 }
 
-fn is_stale_ssh_lock(lock_path: &Path) -> bool {
-    let lock_pid = match std::fs::read_to_string(lock_path) {
-        Ok(content) => match content.trim().parse::<u32>() {
-            Ok(pid) => pid,
-            Err(_) => return true,
-        },
-        Err(err) => {
-            if err.kind() == ErrorKind::NotFound {
-                return true;
-            }
-            return false;
-        }
-    };
-
-    !is_process_alive(lock_pid)
-}
 
 /// Reserve a specific SSH port with a file lock.
 /// This is used for fixed port allocation where the port is predetermined.
@@ -257,7 +240,7 @@ pub fn reserve_specific_ssh_port(instances_dir: &Path, port: u16) -> Result<SshP
     let lock_path = ssh_port_lock_path(instances_dir, port);
 
     // Clean up stale lock if exists
-    if lock_path.exists() && is_stale_ssh_lock(&lock_path) {
+    if lock_path.exists() && is_stale_pid_lock(&lock_path) {
         let _ = std::fs::remove_file(&lock_path);
     }
 
@@ -300,7 +283,7 @@ pub fn reserve_ssh_port(instances_dir: &Path, preferred_port: u16) -> Result<Ssh
         let lock_path = ssh_port_lock_path(instances_dir, port);
 
         // Clean up stale lock if exists
-        if lock_path.exists() && is_stale_ssh_lock(&lock_path) {
+        if lock_path.exists() && is_stale_pid_lock(&lock_path) {
             let _ = std::fs::remove_file(&lock_path);
         }
 
@@ -465,7 +448,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_stale_vm_lock_with_dead_pid() {
+    fn test_is_stale_pid_lock_with_dead_pid() {
         let instances_dir = temp_instances_dir();
         let lock_path = vm_creation_lock_path(instances_dir.path());
 
@@ -473,11 +456,11 @@ mod tests {
 
         // Non-existent PID should be stale
         std::fs::write(&lock_path, "99999999").unwrap();
-        assert!(is_stale_vm_lock(&lock_path));
+        assert!(is_stale_pid_lock(&lock_path));
 
         // Current process PID should not be stale
         std::fs::write(&lock_path, std::process::id().to_string()).unwrap();
-        assert!(!is_stale_vm_lock(&lock_path));
+        assert!(!is_stale_pid_lock(&lock_path));
     }
 
     // -------------------------------------------------------------------------

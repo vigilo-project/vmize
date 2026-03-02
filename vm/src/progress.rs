@@ -21,7 +21,7 @@ impl StepProgress {
     }
 
     pub fn start_step(&mut self, msg: &str) {
-        self.finish_current_ok("");
+        self.complete_step("");
         self.current_step += 1;
         self.current_msg = msg.to_string();
 
@@ -39,32 +39,11 @@ impl StepProgress {
     }
 
     pub fn complete_step(&mut self, detail: &str) {
-        self.finish_current_ok(detail);
+        self.finish_current(style("✓").green(), detail);
     }
 
     pub fn fail_step(&mut self, detail: &str) {
-        if let Some(pb) = self.current_bar.take() {
-            let msg = if detail.is_empty() {
-                format!(
-                    "  {} [{}/{}] {}",
-                    style("✗").red(),
-                    self.current_step,
-                    self.total_steps,
-                    self.current_msg,
-                )
-            } else {
-                format!(
-                    "  {} [{}/{}] {} — {}",
-                    style("✗").red(),
-                    self.current_step,
-                    self.total_steps,
-                    self.current_msg,
-                    detail,
-                )
-            };
-            pb.set_style(ProgressStyle::with_template("  {msg}").unwrap());
-            pb.finish_with_message(msg.trim_start().to_string());
-        }
+        self.finish_current(style("✗").red(), detail);
     }
 
     pub fn multi_progress(&self) -> &MultiProgress {
@@ -78,28 +57,21 @@ impl StepProgress {
         sp.as_ref().map(|s| s.multi_progress())
     }
 
-    fn finish_current_ok(&mut self, detail: &str) {
+    fn finish_current(&mut self, icon: console::StyledObject<&str>, detail: &str) {
         if let Some(pb) = self.current_bar.take() {
             let msg = if detail.is_empty() {
                 format!(
-                    "  {} [{}/{}] {}",
-                    style("✓").green(),
-                    self.current_step,
-                    self.total_steps,
-                    self.current_msg,
+                    "{} [{}/{}] {}",
+                    icon, self.current_step, self.total_steps, self.current_msg,
                 )
             } else {
                 format!(
-                    "  {} [{}/{}] {} — {}",
-                    style("✓").green(),
-                    self.current_step,
-                    self.total_steps,
-                    self.current_msg,
-                    detail,
+                    "{} [{}/{}] {} — {}",
+                    icon, self.current_step, self.total_steps, self.current_msg, detail,
                 )
             };
             pb.set_style(ProgressStyle::with_template("  {msg}").unwrap());
-            pb.finish_with_message(msg.trim_start().to_string());
+            pb.finish_with_message(msg);
         }
     }
 }

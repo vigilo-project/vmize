@@ -6,20 +6,26 @@ use tracing::{debug, info};
 
 use crate::qemu::config::DiskFormat;
 
-pub fn detect_disk_format(path: &Path) -> Result<DiskFormat> {
+/// QFI\xfb magic bytes identifying a qcow2 image.
+pub const QCOW2_MAGIC: [u8; 4] = [b'Q', b'F', b'I', 0xFB];
+
+/// Check whether `path` starts with the qcow2 magic header.
+pub fn has_qcow2_magic(path: &Path) -> Result<bool> {
     let mut file = std::fs::File::open(path).context("Failed to open disk image")?;
     let mut header = [0u8; 4];
 
     match file.read_exact(&mut header) {
-        Ok(()) => {
-            if header == [b'Q', b'F', b'I', 0xFB] {
-                Ok(DiskFormat::Qcow2)
-            } else {
-                Ok(DiskFormat::Raw)
-            }
-        }
-        Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => Ok(DiskFormat::Raw),
+        Ok(()) => Ok(header == QCOW2_MAGIC),
+        Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => Ok(false),
         Err(err) => Err(err).context("Failed to read disk image header"),
+    }
+}
+
+pub fn detect_disk_format(path: &Path) -> Result<DiskFormat> {
+    if has_qcow2_magic(path)? {
+        Ok(DiskFormat::Qcow2)
+    } else {
+        Ok(DiskFormat::Raw)
     }
 }
 

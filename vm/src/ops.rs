@@ -6,7 +6,7 @@ use crate::process::is_process_alive;
 use crate::progress::{StepProgress, sp_complete, sp_fail, sp_start};
 use crate::qemu::config::DiskFormat;
 use crate::qemu::{QemuConfig, QemuRunner};
-use crate::ssh::SshClient;
+use crate::ssh::{SSH_STRICT_OPTIONS, SshClient};
 use crate::vm::{
     VmRecord, VmRuntimeStatus, VmStatus, acquire_vm_creation_lock, keep_key_paths, list_vm_records,
     read_vm_record, remove_vm_instance, reserve_specific_ssh_port, ssh_port_for_vm_index,
@@ -100,8 +100,7 @@ pub async fn ssh_with_config(config: &Config, id: &str, command: &str) -> Result
         .context("Failed to connect to SSH server")?;
 
     info!("Executing command: {}", command);
-    let output = ssh_client.execute_command(&session, command).await?;
-    Ok(output)
+    ssh_client.execute_command(&session, command).await
 }
 
 pub fn ssh_stream_with_config(config: &Config, id: &str, command: &str) -> Result<()> {
@@ -201,11 +200,10 @@ fn scp_transfer_inner(
     if recursive {
         args.push("-r");
     }
+    args.extend_from_slice(&["-i", key_str, "-P", &port_str]);
+    // SCP uses the same options but without BatchMode (scp handles that
+    // differently) and without the -o prefix already present in the constant.
     args.extend_from_slice(&[
-        "-i",
-        key_str,
-        "-P",
-        &port_str,
         "-o",
         "StrictHostKeyChecking=no",
         "-o",
@@ -490,7 +488,7 @@ async fn run_vm_inner(config: &Config, options: RunOptions) -> Result<VmRecord> 
 
     // Step 3: Cloud image or custom rootfs
     let (image_path, _downloaded) = if use_custom_kernel {
-        let rootfs_path = rootfs.clone().expect("Validated rootfs");
+        let rootfs_path = rootfs.expect("Validated rootfs");
         sp_start(&mut sp, "Cloud image");
         notify_progress(&on_progress, 3, 8, "Cloud image");
         log_progress(3, 8, "Using custom rootfs for boot");
@@ -569,7 +567,7 @@ async fn run_vm_inner(config: &Config, options: RunOptions) -> Result<VmRecord> 
     sp_start(&mut sp, "Cloud-init seed");
     notify_progress(&on_progress, 5, 8, "Cloud-init seed");
     info!("Creating cloud-init seed...");
-    let seed = CloudInitSeed::with_config(hostname.clone(), username.clone(), public_key.clone());
+    let seed = CloudInitSeed::with_config(hostname.clone(), username.clone(), public_key);
 
     let metadata_path = vm_dir.join("meta-data");
     let userdata_path = vm_dir.join("user-data");
@@ -589,9 +587,8 @@ async fn run_vm_inner(config: &Config, options: RunOptions) -> Result<VmRecord> 
     notify_progress(&on_progress, 6, 8, "Disk image");
     let (vm_disk_path, disk_format) = if use_custom_kernel {
         info!("Using provided rootfs as VM disk image...");
-        let vm_disk_path = image_path.clone();
-        let disk_format = detect_disk_format(&vm_disk_path)?;
-        (vm_disk_path, disk_format)
+        let disk_format = detect_disk_format(&image_path)?;
+        (image_path.clone(), disk_format)
     } else {
         info!("Creating VM disk image...");
         let vm_disk_path = vm_dir.join("disk.qcow2");
@@ -601,38 +598,22 @@ async fn run_vm_inner(config: &Config, options: RunOptions) -> Result<VmRecord> 
     sp_complete(&mut sp, "created");
     notify_progress(&on_progress, 6, 8, "Disk image — created");
 
-    let kernel_path = if use_custom_kernel {
-        kernel.clone().expect("Validated custom kernel path")
-    } else {
-        PathBuf::new()
-    };
-    let kernel_append = if use_custom_kernel {
-        match host_profile.arch {
-            "x86_64" => Some("root=/dev/vda rw rootfstype=ext4 console=ttyS0"),
-            "aarch64" => Some("root=/dev/vda rw rootfstype=ext4 console=ttyAMA0"),
-            _ => bail!(
-                "Unsupported host architecture for kernel boot: {}",
-                host_profile.arch
-            ),
-        }
-    } else {
-        None
-    };
+    // Step 8: QEMU start
+    sp_start(&mut sp, "Starting QEMU");
+    notify_progress(&on_progress, 7, 8, "Starting QEMU");
+    info!("Building QEMU configuration...");
 
-    // Disable EFI BIOS when booting a custom kernel directly.
+    // Custom kernel boot: direct-boot with kernel+rootfs, no EFI BIOS.
+    // Standard boot: use the host profile's BIOS path (if any).
     let bios_path = if use_custom_kernel {
         None
     } else {
         host_profile.bios_path.map(PathBuf::from)
     };
 
-    // Step 8: QEMU start
-    sp_start(&mut sp, "Starting QEMU");
-    notify_progress(&on_progress, 7, 8, "Starting QEMU");
-    info!("Building QEMU configuration...");
     let mut qemu_config = QemuConfig::from_host_profile(&host_profile)
         .bios_path_opt(bios_path)
-        .memory(memory.clone())
+        .memory(memory)
         .cpus(cpus)
         .disk_image(&vm_disk_path)
         .disk_format(disk_format)
@@ -644,9 +625,16 @@ async fn run_vm_inner(config: &Config, options: RunOptions) -> Result<VmRecord> 
         .daemonize(!verbose);
 
     if use_custom_kernel {
-        qemu_config = qemu_config
-            .kernel_path(kernel_path)
-            .append(kernel_append.expect("kernel append must be set for custom kernel mode"));
+        let kernel_path = kernel.expect("Validated custom kernel path");
+        let kernel_append = match host_profile.arch {
+            "x86_64" => "root=/dev/vda rw rootfstype=ext4 console=ttyS0",
+            "aarch64" => "root=/dev/vda rw rootfstype=ext4 console=ttyAMA0",
+            _ => bail!(
+                "Unsupported host architecture for kernel boot: {}",
+                host_profile.arch
+            ),
+        };
+        qemu_config = qemu_config.kernel_path(kernel_path).append(kernel_append);
     }
 
     info!("Starting QEMU VM...");
@@ -661,9 +649,9 @@ async fn run_vm_inner(config: &Config, options: RunOptions) -> Result<VmRecord> 
     info!("VM started with PID: {}", pid);
 
     let vm_record = VmRecord {
-        id: vm_id.clone(),
-        hostname: hostname.clone(),
-        username: username.clone(),
+        id: vm_id,
+        hostname,
+        username,
         ssh_port,
         private_key_path: private_key_path.to_string_lossy().to_string(),
         disk_path: vm_disk_path.to_string_lossy().to_string(),
@@ -744,22 +732,15 @@ async fn run_vm_inner(config: &Config, options: RunOptions) -> Result<VmRecord> 
 pub(crate) fn run_interactive_ssh(config: &Config, id: &str) -> Result<()> {
     let (record, key_path) = require_running_vm(config, id)?;
 
+    let key_str = key_path.to_str().context("Invalid key path")?;
+    let port_str = record.ssh_port.to_string();
+    let user_host = format!("{}@127.0.0.1", record.username);
+    let mut args: Vec<&str> = vec!["-i", key_str, "-p", &port_str];
+    args.extend_from_slice(&SSH_STRICT_OPTIONS);
+    args.extend_from_slice(&["-o", "ConnectTimeout=10", &user_host]);
+
     let status = Command::new("ssh")
-        .args([
-            "-i",
-            key_path.to_str().context("Invalid key path")?,
-            "-p",
-            &record.ssh_port.to_string(),
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "StrictHostKeyChecking=no",
-            "-o",
-            "UserKnownHostsFile=/dev/null",
-            "-o",
-            "ConnectTimeout=10",
-            &format!("{}@{}", record.username, "127.0.0.1"),
-        ])
+        .args(&args)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())

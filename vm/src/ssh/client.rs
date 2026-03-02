@@ -4,6 +4,18 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
+/// Common SSH options used when spawning `ssh` / `scp` subprocesses.
+/// These suppress host-key verification to avoid interactive prompts
+/// with ephemeral VMs.
+pub const SSH_STRICT_OPTIONS: [&str; 6] = [
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "StrictHostKeyChecking=no",
+    "-o",
+    "UserKnownHostsFile=/dev/null",
+];
+
 /// SSH client for connecting to VMs
 pub struct SshClient;
 
@@ -119,24 +131,14 @@ impl SshClient {
     ) -> Result<()> {
         debug!("Executing command (streaming-raw): {}", command);
 
+        let port_str = port.to_string();
+        let user_host = format!("{}@{}", username, host);
+        let mut args: Vec<&str> = vec!["-i", key_path.to_str().context("Invalid key path")?, "-p", &port_str];
+        args.extend_from_slice(&SSH_STRICT_OPTIONS);
+        args.extend_from_slice(&["-o", "ConnectTimeout=10", &user_host, "--", command]);
+
         let status = std::process::Command::new("ssh")
-            .args([
-                "-i",
-                key_path.to_str().context("Invalid key path")?,
-                "-p",
-                &port.to_string(),
-                "-o",
-                "BatchMode=yes",
-                "-o",
-                "StrictHostKeyChecking=no",
-                "-o",
-                "UserKnownHostsFile=/dev/null",
-                "-o",
-                "ConnectTimeout=10",
-                &format!("{}@{}", username, host),
-                "--",
-                command,
-            ])
+            .args(&args)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::inherit())
             .stderr(std::process::Stdio::inherit())

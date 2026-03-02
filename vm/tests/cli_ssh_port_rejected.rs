@@ -34,4 +34,3 @@ fn vm_run_rejects_ssh_port_flag() {
         "expected parse error, stderr: {stderr}"
     );
 }
-

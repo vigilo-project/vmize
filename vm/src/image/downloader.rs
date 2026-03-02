@@ -1,3 +1,4 @@
+use super::disk::has_qcow2_magic;
 use anyhow::{Context, Result, bail};
 use futures::StreamExt;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
@@ -175,7 +176,7 @@ impl ImageDownloader {
             return Ok(false);
         }
 
-        if Self::has_qcow2_magic(path)? {
+        if has_qcow2_magic(path)? {
             return Ok(true);
         }
 
@@ -184,18 +185,6 @@ impl ImageDownloader {
         }
 
         Ok(false)
-    }
-
-    fn has_qcow2_magic(path: &Path) -> Result<bool> {
-        use std::io::{ErrorKind, Read};
-
-        let mut file = std::fs::File::open(path).context("Failed to open image file")?;
-        let mut header = [0u8; 4];
-        match file.read_exact(&mut header) {
-            Ok(_) => Ok(header == [b'Q', b'F', b'I', 0xFB]),
-            Err(err) if err.kind() == ErrorKind::UnexpectedEof => Ok(false),
-            Err(err) => Err(err).context("Failed to read image header"),
-        }
     }
 
     fn is_qemu_img_available() -> bool {

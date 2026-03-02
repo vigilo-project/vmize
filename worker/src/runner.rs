@@ -197,17 +197,18 @@ pub fn run_task_chain_blocking_with_progress(
             message: format!("Task chain failed at {}: {err}", current_task_dir.display()),
         })?;
 
-        let mut handoff_artifacts = Vec::new();
-        if loaded.definition.next_task_dir.is_some() {
-            let artifacts = collect_handoff_artifacts(&loaded)?;
-            handoff_artifacts = artifacts
-                .iter()
-                .map(|artifact| artifact.relative_path.to_string_lossy().to_string())
-                .collect();
-            pending_handoff = Some(artifacts);
-        } else {
-            pending_handoff = None;
-        }
+        let (handoff_artifacts, next_handoff) =
+            if loaded.definition.next_task_dir.is_some() {
+                let artifacts = collect_handoff_artifacts(&loaded)?;
+                let names = artifacts
+                    .iter()
+                    .map(|a| a.relative_path.to_string_lossy().to_string())
+                    .collect();
+                (names, Some(artifacts))
+            } else {
+                (Vec::new(), None)
+            };
+        pending_handoff = next_handoff;
 
         chain_result.steps.push(ChainStepResult {
             task_dir: current_task_dir.clone(),
@@ -274,23 +275,18 @@ pub async fn run_loaded_task_with_ops<V: VmOps + ?Sized>(
 
     result.elapsed_ms = start.elapsed().as_millis() as u64;
 
-    match (run_error, cleanup_result) {
-        (Some(err), Ok(_)) => {
-            result.exit_code = 1;
-            Err(err)
-        }
-        (None, Err(err)) => {
-            result.exit_code = 1;
-            Err(err)
-        }
-        (Some(run_err), Err(cleanup_err)) => {
-            result.exit_code = 1;
-            Err(combine_errors(run_err, cleanup_err))
-        }
-        (None, Ok(_)) => {
-            result.exit_code = 0;
-            Ok(result)
-        }
+    let final_error = match (run_error, cleanup_result) {
+        (Some(run_err), Err(cleanup_err)) => Some(combine_errors(run_err, cleanup_err)),
+        (Some(err), Ok(_)) | (None, Err(err)) => Some(err),
+        (None, Ok(_)) => None,
+    };
+
+    if let Some(err) = final_error {
+        result.exit_code = 1;
+        Err(err)
+    } else {
+        result.exit_code = 0;
+        Ok(result)
     }
 }
 
@@ -341,11 +337,11 @@ fn prepare_vm_launch_options(
                 None
             };
 
-            if let Some(size) = effective_disk_size.as_deref() {
-                if let Err(err) = resize_rootfs_image(&runtime_rootfs, size) {
-                    cleanup_temporary_rootfs(temporary_rootfs_path.as_deref());
-                    return Err(err);
-                }
+            if let Some(size) = effective_disk_size.as_deref()
+                && let Err(err) = resize_rootfs_image(&runtime_rootfs, size)
+            {
+                cleanup_temporary_rootfs(temporary_rootfs_path.as_deref());
+                return Err(err);
             }
 
             Ok(VmLaunchOptions {
@@ -399,9 +395,6 @@ fn clone_rootfs_for_task(rootfs: &Path, task_name: Option<&str>) -> Result<PathB
 }
 
 fn next_rootfs_clone_path(rootfs: &Path, task_name: Option<&str>) -> PathBuf {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
     let counter = ROOTFS_CLONE_COUNTER.fetch_add(1, Ordering::Relaxed);
     let label = task_name
         .map(sanitize_for_path)
@@ -412,13 +405,7 @@ fn next_rootfs_clone_path(rootfs: &Path, task_name: Option<&str>) -> PathBuf {
         .and_then(|value| value.to_str())
         .unwrap_or("img");
 
-    std::env::temp_dir().join(format!(
-        "vmize-rootfs-{label}-{}-{}-{}.{}",
-        std::process::id(),
-        now.as_nanos(),
-        counter,
-        ext
-    ))
+    unique_temp_path(&format!("vmize-rootfs-{label}"), counter, Some(ext))
 }
 
 fn sanitize_for_path(value: &str) -> String {
@@ -789,16 +776,8 @@ fn create_overlay_input_dir(
 }
 
 fn next_overlay_input_dir() -> PathBuf {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
     let counter = OVERLAY_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!(
-        "vmize-chain-input-{}-{}-{}",
-        std::process::id(),
-        now.as_nanos(),
-        counter
-    ))
+    unique_temp_path("vmize-chain-input", counter, None)
 }
 
 fn copy_directory_contents(src: &Path, dest: &Path) -> Result<(), Error> {
@@ -878,18 +857,22 @@ fn parse_relative_path(value: &str, field: &str, allow_parent: bool) -> Result<P
     Ok(path.to_path_buf())
 }
 
-fn send_chain_step(
-    chain_step_tx: &Option<mpsc::Sender<ChainStepProgress>>,
-    event: ChainStepProgress,
-) {
-    if let Some(tx) = chain_step_tx {
-        let _ = tx.send(event);
-    }
-}
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // Helper Functions
 // ═══════════════════════════════════════════════════════════════════════════════
+
+fn unique_temp_path(prefix: &str, counter: u64, extension: Option<&str>) -> PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let pid = std::process::id();
+    let name = match extension {
+        Some(ext) => format!("{prefix}-{pid}-{nanos}-{counter}.{ext}"),
+        None => format!("{prefix}-{pid}-{nanos}-{counter}"),
+    };
+    std::env::temp_dir().join(name)
+}
 
 fn path_to_str(path: &Path) -> Result<&str, Error> {
     path.to_str().ok_or_else(|| Error::NonUtf8Path {
@@ -907,10 +890,21 @@ fn combine_errors(primary: Error, cleanup: Error) -> Error {
     }
 }
 
-fn send_progress(progress_tx: &Option<mpsc::Sender<RunProgress>>, event: RunProgress) {
-    if let Some(tx) = progress_tx {
+fn send_optional<T>(tx: &Option<mpsc::Sender<T>>, event: T) {
+    if let Some(tx) = tx {
         let _ = tx.send(event);
     }
+}
+
+fn send_progress(progress_tx: &Option<mpsc::Sender<RunProgress>>, event: RunProgress) {
+    send_optional(progress_tx, event);
+}
+
+fn send_chain_step(
+    chain_step_tx: &Option<mpsc::Sender<ChainStepProgress>>,
+    event: ChainStepProgress,
+) {
+    send_optional(chain_step_tx, event);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

@@ -118,25 +118,22 @@ impl VmOps for RealVmOps {
         let stderr = child.stderr.take().expect("failed to capture stderr");
 
         let (line_tx, line_rx) = std::sync::mpsc::channel::<String>();
-        let stdout_tx = line_tx.clone();
-        let stdout_reader = thread::spawn(move || {
-            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                if stdout_tx.send(line).is_err() {
-                    break;
-                }
-            }
-        });
 
-        let stderr_tx = line_tx.clone();
-        let stderr_reader = thread::spawn(move || {
-            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                if stderr_tx.send(line).is_err() {
-                    break;
+        fn spawn_reader<R: std::io::Read + Send + 'static>(
+            reader: R,
+            tx: std::sync::mpsc::Sender<String>,
+        ) -> thread::JoinHandle<()> {
+            thread::spawn(move || {
+                for line in BufReader::new(reader).lines().map_while(Result::ok) {
+                    if tx.send(line).is_err() {
+                        break;
+                    }
                 }
-            }
-        });
+            })
+        }
 
-        drop(line_tx);
+        let stdout_reader = spawn_reader(stdout, line_tx.clone());
+        let stderr_reader = spawn_reader(stderr, line_tx);
 
         for line in line_rx {
             on_line(line);
@@ -397,7 +394,7 @@ pub mod mock {
                 .unwrap()
                 .push(command.to_string());
             let outputs = self.stream_outputs.lock().unwrap();
-            let lines = outputs.front().map(|v| v.clone()).unwrap_or_default();
+            let lines = outputs.front().cloned().unwrap_or_default();
             drop(outputs);
 
             for line in lines {
