@@ -52,6 +52,35 @@ cargo build --release
 ./target/release/vm run
 ```
 
+By default, `vm run` boots Ubuntu 24.04 minimal cloud image selected by host profile:
+
+- `linux/x86_64` -> `https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-amd64.img`
+- `macos/aarch64` -> `https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-arm64.img`
+
+Custom boot is also supported with explicit kernel + rootfs disk image:
+
+```bash
+./target/release/vm run \
+  --kernel /Users/sangwan/dev/vmize/image/bzImage \
+  --rootfs /Users/sangwan/dev/vmize/image/rootfs.qcow2
+```
+
+`--kernel` and `--rootfs` must be provided together.
+
+Example artifact sources:
+
+- Kernel: `worker/example/kernel-build/output/kernel` (copied to `image/bzImage`)
+- Rootfs: `worker/example/rootfs-build/output/rootfs.qcow2` (copied to `image/rootfs.qcow2`)
+
+You can generate those artifacts with:
+
+```bash
+./target/release/vmize task worker/example/kernel-build
+./target/release/vmize task worker/example/rootfs-build
+```
+
+See [`vm/README.md`](./vm/README.md) for the full custom-boot workflow.
+
 ## Quick Start: worker
 
 ```bash
