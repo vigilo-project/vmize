@@ -4,6 +4,7 @@
 //! enabling unit testing without requiring QEMU/VM infrastructure.
 
 use anyhow::Result;
+use std::path::PathBuf;
 
 #[cfg(test)]
 use std::sync::Mutex;
@@ -15,6 +16,8 @@ pub use vm::VmRecord;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct VmOptions {
     pub disk_size: Option<String>,
+    pub kernel: Option<PathBuf>,
+    pub rootfs: Option<PathBuf>,
     pub show_progress: bool,
 }
 
@@ -55,6 +58,8 @@ impl VmOps for RealVmOps {
     async fn run(&self, options: VmOptions) -> Result<VmRecord> {
         let vm_options = vm::RunOptions {
             disk_size: options.disk_size,
+            kernel: options.kernel,
+            rootfs: options.rootfs,
             show_progress: options.show_progress,
             on_progress: None,
             ..Default::default()

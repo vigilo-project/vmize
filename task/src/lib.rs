@@ -2,6 +2,42 @@ use std::path::{Component, Path, PathBuf};
 
 use serde::Deserialize;
 
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
+pub enum TaskVmBoot {
+    #[default]
+    #[serde(rename = "ubuntu", alias = "cloud")]
+    Ubuntu,
+    #[serde(rename = "custom")]
+    Custom,
+}
+
+fn default_clone_rootfs() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct TaskVmConfig {
+    #[serde(default)]
+    pub boot: TaskVmBoot,
+    #[serde(default)]
+    pub kernel: Option<String>,
+    #[serde(default)]
+    pub rootfs: Option<String>,
+    #[serde(default = "default_clone_rootfs")]
+    pub clone_rootfs: bool,
+}
+
+impl Default for TaskVmConfig {
+    fn default() -> Self {
+        Self {
+            boot: TaskVmBoot::Ubuntu,
+            kernel: None,
+            rootfs: None,
+            clone_rootfs: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct TaskDefinition {
     pub name: Option<String>,
@@ -14,6 +50,8 @@ pub struct TaskDefinition {
     pub artifacts: Option<Vec<String>>,
     #[serde(default)]
     pub next_task_dir: Option<String>,
+    #[serde(default)]
+    pub vm: Option<TaskVmConfig>,
 }
 
 #[derive(Debug, Clone)]
@@ -79,6 +117,12 @@ pub fn load_task(task_dir: &Path) -> Result<LoadedTask, String> {
                 )
             })?;
         }
+    }
+
+    if let Some(vm) = definition.vm.as_ref() {
+        validate_vm_config(vm).map_err(|message| {
+            format!("Invalid vm config in {}: {message}", json_path.display())
+        })?;
     }
 
     let output_dir = task_dir.join("output");
@@ -178,6 +222,106 @@ mod tests {
         let result = load_task(temp.path()).unwrap();
 
         assert_eq!(result.definition.next_task_dir, Some("task2".to_string()));
+    }
+
+    #[test]
+    fn load_task_parses_vm_custom_config() {
+        let temp = create_task_dir_with_input(
+            r#"{
+                "commands": [],
+                "vm": {
+                    "boot": "custom",
+                    "kernel": "../image/bzImage",
+                    "rootfs": "../image/rootfs.qcow2",
+                    "clone_rootfs": false
+                }
+            }"#,
+            &[],
+        );
+
+        let result = load_task(temp.path()).unwrap();
+        let vm = result.definition.vm.expect("vm config should be present");
+        assert_eq!(vm.boot, TaskVmBoot::Custom);
+        assert_eq!(vm.kernel.as_deref(), Some("../image/bzImage"));
+        assert_eq!(vm.rootfs.as_deref(), Some("../image/rootfs.qcow2"));
+        assert!(!vm.clone_rootfs);
+    }
+
+    #[test]
+    fn load_task_parses_vm_cloud_alias_as_ubuntu() {
+        let temp = create_task_dir_with_input(
+            r#"{
+                "commands": [],
+                "vm": {
+                    "boot": "cloud"
+                }
+            }"#,
+            &[],
+        );
+
+        let result = load_task(temp.path()).unwrap();
+        let vm = result.definition.vm.expect("vm config should be present");
+        assert_eq!(vm.boot, TaskVmBoot::Ubuntu);
+        assert!(vm.clone_rootfs);
+    }
+
+    #[test]
+    fn load_task_fails_when_vm_custom_kernel_missing() {
+        let temp = create_task_dir_with_input(
+            r#"{
+                "commands": [],
+                "vm": {
+                    "boot": "custom",
+                    "rootfs": "../image/rootfs.qcow2"
+                }
+            }"#,
+            &[],
+        );
+
+        let result = load_task(temp.path());
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("vm.kernel is required"));
+    }
+
+    #[test]
+    fn load_task_fails_when_vm_ubuntu_has_custom_paths() {
+        let temp = create_task_dir_with_input(
+            r#"{
+                "commands": [],
+                "vm": {
+                    "boot": "ubuntu",
+                    "kernel": "../image/bzImage"
+                }
+            }"#,
+            &[],
+        );
+
+        let result = load_task(temp.path());
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("vm.boot='ubuntu'"));
+    }
+
+    #[test]
+    fn load_task_fails_when_vm_custom_path_has_curdir_component() {
+        let temp = create_task_dir_with_input(
+            r#"{
+                "commands": [],
+                "vm": {
+                    "boot": "custom",
+                    "kernel": "./image/bzImage",
+                    "rootfs": "../image/rootfs.qcow2"
+                }
+            }"#,
+            &[],
+        );
+
+        let result = load_task(temp.path());
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("vm.kernel"));
+        assert!(err.contains("must not include '.'"));
     }
 
     #[test]
@@ -423,6 +567,49 @@ fn validate_artifact_path(value: &str) -> Result<(), String> {
         .any(|component| matches!(component, Component::ParentDir))
     {
         return Err("must not include '..' path components".to_string());
+    }
+
+    Ok(())
+}
+
+fn validate_vm_config(vm: &TaskVmConfig) -> Result<(), String> {
+    match vm.boot {
+        TaskVmBoot::Ubuntu => {
+            if vm.kernel.is_some() || vm.rootfs.is_some() {
+                return Err(
+                    "vm.boot='ubuntu' does not allow vm.kernel/vm.rootfs (use vm.boot='custom')"
+                        .to_string(),
+                );
+            }
+        }
+        TaskVmBoot::Custom => {
+            let kernel = vm
+                .kernel
+                .as_deref()
+                .ok_or_else(|| "vm.kernel is required when vm.boot='custom'".to_string())?;
+            let rootfs = vm
+                .rootfs
+                .as_deref()
+                .ok_or_else(|| "vm.rootfs is required when vm.boot='custom'".to_string())?;
+            validate_vm_path(kernel, "vm.kernel")?;
+            validate_vm_path(rootfs, "vm.rootfs")?;
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_vm_path(value: &str, field: &str) -> Result<(), String> {
+    if value.trim().is_empty() {
+        return Err(format!("{field} must not be empty"));
+    }
+
+    let path = Path::new(value);
+    if path
+        .components()
+        .any(|component| matches!(component, Component::CurDir))
+    {
+        return Err(format!("{field} must not include '.' path components"));
     }
 
     Ok(())

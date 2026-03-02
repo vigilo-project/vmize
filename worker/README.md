@@ -85,6 +85,9 @@ Example `task.json`:
   "name": "my-task",
   "description": "Build and test in an ephemeral VM",
   "disk_size": "20G",
+  "vm": {
+    "boot": "ubuntu"
+  },
   "commands": ["00_setup.sh", "10_run.sh"],
   "artifacts": ["result.txt"]
 }
@@ -92,6 +95,28 @@ Example `task.json`:
 
 `commands` — ordered list of files in `input/` to execute inside the VM.
 `artifacts` — expected output files; if omitted, all of `/tmp/vmize-worker/out/` is copied back.
+`vm.boot` — VM boot mode:
+- `ubuntu` (default): use VMize host-profile Ubuntu cloud image flow.
+- `custom`: use explicit `vm.kernel` + `vm.rootfs`.
+- `cloud` is accepted as an alias of `ubuntu` for backward compatibility.
+
+For custom boot tasks:
+
+```json
+{
+  "disk_size": "12G",
+  "vm": {
+    "boot": "custom",
+    "kernel": "../../../image/bzImage",
+    "rootfs": "../../../image/rootfs.qcow2",
+    "clone_rootfs": true
+  }
+}
+```
+
+`vm.kernel`/`vm.rootfs` paths are resolved relative to the task directory (absolute paths are also allowed).
+When `clone_rootfs` is `true` (default), worker runs each task step on a temporary rootfs copy.
+With custom boot, `disk_size` is applied by resizing that temporary copy.
 
 ## Verification Commands
 

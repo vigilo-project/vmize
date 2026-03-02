@@ -1,18 +1,43 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::time::Instant;
 
 use crate::vm_ops::{VmOps, VmOptions};
 use crate::{ChainRunResult, ChainStepResult, Error, RunResult};
-use task::{LoadedTask, load_task};
+use task::{LoadedTask, TaskVmBoot, load_task};
 
 const VM_WORK_DIR: &str = "/tmp/vmize-worker/work";
 const VM_OUTPUT_DIR: &str = "/tmp/vmize-worker/out";
 const VM_LOGS_DIR: &str = "/tmp/vmize-worker/logs";
 static OVERLAY_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
+static ROOTFS_CLONE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug, Clone)]
+struct VmLaunchOptions {
+    vm_options: VmOptions,
+    temporary_rootfs_path: Option<PathBuf>,
+}
+
+#[derive(Debug)]
+struct TemporaryRootfsCleanup {
+    path: Option<PathBuf>,
+}
+
+impl TemporaryRootfsCleanup {
+    fn new(path: Option<PathBuf>) -> Self {
+        Self { path }
+    }
+}
+
+impl Drop for TemporaryRootfsCleanup {
+    fn drop(&mut self) {
+        cleanup_temporary_rootfs(self.path.as_deref());
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct TaskRunOptions {
@@ -211,17 +236,13 @@ pub async fn run_loaded_task_with_ops<V: VmOps + ?Sized>(
     let input_dir = &task.input_dir;
     let output_dir = &task.output_dir;
     let logs_dir = &task.logs_dir;
-    let effective_disk_size = options
-        .disk_size
-        .clone()
-        .or_else(|| task.definition.disk_size.clone());
+    let vm_launch = prepare_vm_launch_options(task, &options)?;
+    let _temporary_rootfs_cleanup =
+        TemporaryRootfsCleanup::new(vm_launch.temporary_rootfs_path.clone());
 
     send_progress(&progress_tx, RunProgress::Phase(RunPhase::StartingVm));
     let record = vm_ops
-        .run(VmOptions {
-            disk_size: effective_disk_size,
-            show_progress: options.show_progress,
-        })
+        .run(vm_launch.vm_options)
         .await
         .map_err(|err| Error::VmStart {
             message: err.to_string(),
@@ -270,6 +291,183 @@ pub async fn run_loaded_task_with_ops<V: VmOps + ?Sized>(
             result.exit_code = 0;
             Ok(result)
         }
+    }
+}
+
+fn prepare_vm_launch_options(
+    task: &LoadedTask,
+    options: &TaskRunOptions,
+) -> Result<VmLaunchOptions, Error> {
+    let effective_disk_size = options
+        .disk_size
+        .clone()
+        .or_else(|| task.definition.disk_size.clone());
+    let vm_config = task.definition.vm.clone().unwrap_or_default();
+
+    match vm_config.boot {
+        TaskVmBoot::Ubuntu => Ok(VmLaunchOptions {
+            vm_options: VmOptions {
+                disk_size: effective_disk_size,
+                kernel: None,
+                rootfs: None,
+                show_progress: options.show_progress,
+            },
+            temporary_rootfs_path: None,
+        }),
+        TaskVmBoot::Custom => {
+            let kernel_value = vm_config.kernel.as_deref().ok_or_else(|| Error::Runtime {
+                message: "vm.kernel is required for vm.boot='custom'".to_string(),
+            })?;
+            let rootfs_value = vm_config.rootfs.as_deref().ok_or_else(|| Error::Runtime {
+                message: "vm.rootfs is required for vm.boot='custom'".to_string(),
+            })?;
+
+            let kernel = resolve_vm_config_path(task, "vm.kernel", kernel_value)?;
+            let rootfs = resolve_vm_config_path(task, "vm.rootfs", rootfs_value)?;
+
+            if effective_disk_size.is_some() && !vm_config.clone_rootfs {
+                return Err(Error::Runtime {
+                    message: "custom VM boot requires vm.clone_rootfs=true when disk_size is set"
+                        .to_string(),
+                });
+            }
+
+            let mut runtime_rootfs = rootfs.clone();
+            let temporary_rootfs_path = if vm_config.clone_rootfs {
+                let cloned = clone_rootfs_for_task(&rootfs, task.definition.name.as_deref())?;
+                runtime_rootfs = cloned.clone();
+                Some(cloned)
+            } else {
+                None
+            };
+
+            if let Some(size) = effective_disk_size.as_deref() {
+                if let Err(err) = resize_rootfs_image(&runtime_rootfs, size) {
+                    cleanup_temporary_rootfs(temporary_rootfs_path.as_deref());
+                    return Err(err);
+                }
+            }
+
+            Ok(VmLaunchOptions {
+                vm_options: VmOptions {
+                    disk_size: None,
+                    kernel: Some(kernel),
+                    rootfs: Some(runtime_rootfs),
+                    show_progress: options.show_progress,
+                },
+                temporary_rootfs_path,
+            })
+        }
+    }
+}
+
+fn resolve_vm_config_path(task: &LoadedTask, field: &str, value: &str) -> Result<PathBuf, Error> {
+    let configured = Path::new(value);
+    let task_dir = task.output_dir.parent().ok_or_else(|| Error::Runtime {
+        message: format!("Failed to resolve task directory for {field}"),
+    })?;
+    let resolved = if configured.is_absolute() {
+        configured.to_path_buf()
+    } else {
+        task_dir.join(configured)
+    };
+
+    if !resolved.exists() {
+        return Err(Error::Runtime {
+            message: format!("{field} path does not exist: {}", resolved.display()),
+        });
+    }
+    if !resolved.is_file() {
+        return Err(Error::Runtime {
+            message: format!("{field} path is not a file: {}", resolved.display()),
+        });
+    }
+
+    Ok(resolved)
+}
+
+fn clone_rootfs_for_task(rootfs: &Path, task_name: Option<&str>) -> Result<PathBuf, Error> {
+    let clone_path = next_rootfs_clone_path(rootfs, task_name);
+    fs::copy(rootfs, &clone_path).map_err(|err| Error::Runtime {
+        message: format!(
+            "Failed to clone custom rootfs {} to {}: {err}",
+            rootfs.display(),
+            clone_path.display()
+        ),
+    })?;
+    Ok(clone_path)
+}
+
+fn next_rootfs_clone_path(rootfs: &Path, task_name: Option<&str>) -> PathBuf {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let counter = ROOTFS_CLONE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let label = task_name
+        .map(sanitize_for_path)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "task".to_string());
+    let ext = rootfs
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("img");
+
+    std::env::temp_dir().join(format!(
+        "vmize-rootfs-{label}-{}-{}-{}.{}",
+        std::process::id(),
+        now.as_nanos(),
+        counter,
+        ext
+    ))
+}
+
+fn sanitize_for_path(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
+fn resize_rootfs_image(rootfs: &Path, size: &str) -> Result<(), Error> {
+    let size = size.trim();
+    if size.is_empty() {
+        return Ok(());
+    }
+
+    let rootfs_str = path_to_str(rootfs)?;
+    let output = Command::new("qemu-img")
+        .args(["resize", rootfs_str, size])
+        .output()
+        .map_err(|err| Error::Runtime {
+            message: format!(
+                "Failed to execute qemu-img resize for {}: {err}",
+                rootfs.display()
+            ),
+        })?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    Err(Error::Runtime {
+        message: format!(
+            "qemu-img resize failed for {} to {}: {}",
+            rootfs.display(),
+            size,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ),
+    })
+}
+
+fn cleanup_temporary_rootfs(path: Option<&Path>) {
+    if let Some(path) = path {
+        let _ = fs::remove_file(path);
     }
 }
 
@@ -750,6 +948,7 @@ mod tests {
                 commands: commands.iter().map(|s| s.to_string()).collect(),
                 artifacts: None,
                 next_task_dir: None,
+                vm: None,
             },
             input_dir,
             output_dir,
@@ -1431,5 +1630,155 @@ mod tests {
         let run_calls = mock.run_calls();
         assert_eq!(run_calls.len(), 1);
         assert_eq!(run_calls[0].disk_size, Some("30G".to_string()));
+    }
+
+    #[test]
+    fn run_loaded_task_with_ops_uses_custom_vm_kernel_and_rootfs() {
+        let (temp, mut task) = create_test_loaded_task(&["00_first.sh"]);
+        let kernel_path = temp.path().join("kernel").join("bzImage");
+        fs::create_dir_all(kernel_path.parent().unwrap()).unwrap();
+        fs::write(&kernel_path, "kernel").unwrap();
+        let rootfs_path = temp.path().join("rootfs.qcow2");
+        fs::write(&rootfs_path, "rootfs").unwrap();
+        task.definition.vm = Some(task::TaskVmConfig {
+            boot: TaskVmBoot::Custom,
+            kernel: Some("kernel/bzImage".to_string()),
+            rootfs: Some("rootfs.qcow2".to_string()),
+            clone_rootfs: false,
+        });
+
+        let mock = MockVmOps::new()
+            .with_run_ok("test-vm")
+            .with_ssh_ok("")
+            .with_stream_outputs(vec!["output"]);
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _ = rt
+            .block_on(run_loaded_task_with_ops(
+                &mock,
+                &task,
+                TaskRunOptions::default(),
+                None,
+            ))
+            .unwrap();
+
+        let run_calls = mock.run_calls();
+        assert_eq!(run_calls.len(), 1);
+        assert_eq!(run_calls[0].disk_size, None);
+        assert_eq!(run_calls[0].kernel.as_deref(), Some(kernel_path.as_path()));
+        assert_eq!(run_calls[0].rootfs.as_deref(), Some(rootfs_path.as_path()));
+    }
+
+    #[test]
+    fn run_loaded_task_with_ops_clones_custom_rootfs_when_enabled() {
+        let (temp, mut task) = create_test_loaded_task(&["00_first.sh"]);
+        let kernel_path = temp.path().join("bzImage");
+        fs::write(&kernel_path, "kernel").unwrap();
+        let rootfs_path = temp.path().join("rootfs.qcow2");
+        fs::write(&rootfs_path, "rootfs").unwrap();
+        task.definition.vm = Some(task::TaskVmConfig {
+            boot: TaskVmBoot::Custom,
+            kernel: Some("bzImage".to_string()),
+            rootfs: Some("rootfs.qcow2".to_string()),
+            clone_rootfs: true,
+        });
+
+        let mock = MockVmOps::new()
+            .with_run_ok("test-vm")
+            .with_ssh_ok("")
+            .with_stream_outputs(vec!["output"]);
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _ = rt
+            .block_on(run_loaded_task_with_ops(
+                &mock,
+                &task,
+                TaskRunOptions::default(),
+                None,
+            ))
+            .unwrap();
+
+        let run_calls = mock.run_calls();
+        assert_eq!(run_calls.len(), 1);
+        let cloned_rootfs = run_calls[0]
+            .rootfs
+            .as_ref()
+            .expect("rootfs must be set for custom boot")
+            .to_path_buf();
+        assert_ne!(cloned_rootfs, rootfs_path);
+        assert!(!cloned_rootfs.exists());
+    }
+
+    #[test]
+    fn run_loaded_task_with_ops_cleans_cloned_rootfs_on_vm_start_failure() {
+        let (temp, mut task) = create_test_loaded_task(&["00_first.sh"]);
+        let kernel_path = temp.path().join("bzImage");
+        fs::write(&kernel_path, "kernel").unwrap();
+        let rootfs_path = temp.path().join("rootfs.qcow2");
+        fs::write(&rootfs_path, "rootfs").unwrap();
+        task.definition.vm = Some(task::TaskVmConfig {
+            boot: TaskVmBoot::Custom,
+            kernel: Some("bzImage".to_string()),
+            rootfs: Some("rootfs.qcow2".to_string()),
+            clone_rootfs: true,
+        });
+
+        let mock = MockVmOps::new().with_run_err("failed");
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _ = rt.block_on(run_loaded_task_with_ops(
+            &mock,
+            &task,
+            TaskRunOptions::default(),
+            None,
+        ));
+
+        let run_calls = mock.run_calls();
+        assert_eq!(run_calls.len(), 1);
+        let cloned_rootfs = run_calls[0]
+            .rootfs
+            .as_ref()
+            .expect("rootfs must be set for custom boot")
+            .to_path_buf();
+        assert_ne!(cloned_rootfs, rootfs_path);
+        assert!(!cloned_rootfs.exists());
+        assert!(mock.rm_calls().is_empty());
+    }
+
+    #[test]
+    fn run_loaded_task_with_ops_rejects_disk_resize_without_rootfs_clone() {
+        let (temp, mut task) = create_test_loaded_task(&["00_first.sh"]);
+        let kernel_path = temp.path().join("bzImage");
+        fs::write(&kernel_path, "kernel").unwrap();
+        let rootfs_path = temp.path().join("rootfs.qcow2");
+        fs::write(&rootfs_path, "rootfs").unwrap();
+        task.definition.vm = Some(task::TaskVmConfig {
+            boot: TaskVmBoot::Custom,
+            kernel: Some("bzImage".to_string()),
+            rootfs: Some("rootfs.qcow2".to_string()),
+            clone_rootfs: false,
+        });
+
+        let mock = MockVmOps::new().with_run_ok("test-vm");
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let err = rt
+            .block_on(run_loaded_task_with_ops(
+                &mock,
+                &task,
+                TaskRunOptions {
+                    disk_size: Some("12G".to_string()),
+                    ..Default::default()
+                },
+                None,
+            ))
+            .unwrap_err();
+
+        match err {
+            Error::Runtime { message } => assert!(message.contains("vm.clone_rootfs=true")),
+            other => panic!("Expected Runtime error, got: {other}"),
+        }
+
+        assert!(mock.run_calls().is_empty());
     }
 }
