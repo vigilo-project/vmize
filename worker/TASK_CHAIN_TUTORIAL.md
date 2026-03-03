@@ -28,9 +28,84 @@ These tasks prepare custom boot files used by the chain:
 - `CONFIG_BLK_DEV_LOOP`
 - `CONFIG_BLK_DEV_DM`
 - `CONFIG_DM_VERITY`
+- `CONFIG_CRYPTO_SHA256`
 
 `runc-llama-*` tasks are set to `disk_size: 20G` to avoid resize failures when
 using the handed-off rootfs artifacts.
+
+## Per-Task Kernel Config Requirements
+
+This section defines the minimum kernel config expectations per task in the
+`runc-llama` 5-stage chain path.
+
+1. `rootfs-build`
+- Kernel config requirement: none (runs in default Ubuntu boot profile).
+- Notes: builds `rootfs.qcow2` artifact only.
+
+2. `kernel-build`
+- Kernel config requirement: none for running the task itself.
+- Output requirement: emits custom kernel image with chain-required options enabled.
+- Required output options:
+  - `CONFIG_USER_NS=y`
+  - `CONFIG_CGROUP_BPF=y`
+  - `CONFIG_CGROUP_DEVICE=y`
+  - `CONFIG_BLK_DEV_LOOP=y`
+  - `CONFIG_BLK_DEV_DM=y`
+  - `CONFIG_DM_VERITY=y`
+  - `CONFIG_CRYPTO_SHA256=y`
+- Why `CRYPTO_SHA256=y`:
+  - stage4/stage5 `dm-verity` runtime needs SHA256 in-kernel hash support.
+  - module form (`=m`) can fail in this workflow because task VMs do not install a
+    matching `/lib/modules/$(uname -r)` tree for the custom kernel.
+
+3. `runc-llama-build` (stage1)
+- Uses custom boot (`image/bzImage`, `image/rootfs.qcow2`).
+- Required kernel options:
+  - `CONFIG_USER_NS`
+  - `CONFIG_CGROUP_BPF`
+  - `CONFIG_CGROUP_DEVICE`
+- Purpose: stable `runc` runtime + namespace/cgroup behavior for container boot and
+  UDS inference.
+
+4. `runc-llama-hardened` (stage2)
+- Uses custom boot (`image/bzImage`, `image/rootfs.qcow2`).
+- Required kernel options:
+  - `CONFIG_USER_NS`
+  - `CONFIG_CGROUP_BPF`
+  - `CONFIG_CGROUP_DEVICE`
+- Purpose: same container runtime baseline as stage1 with hardened config handoff.
+
+5. `runc-llama-verity-pack` (stage3)
+- Uses custom boot (`image/bzImage`, `image/rootfs.qcow2`).
+- Required kernel options:
+  - `CONFIG_BLK_DEV_LOOP` (for loop-backed verify path as used by tooling/workflow)
+- Purpose: generate and verify `rootfs.verity` metadata and hand off artifacts.
+
+6. `runc-llama-verity-run` (stage4)
+- Uses custom boot (`image/bzImage`, `image/rootfs.qcow2`).
+- Required kernel options:
+  - `CONFIG_BLK_DEV_LOOP`
+  - `CONFIG_BLK_DEV_DM`
+  - `CONFIG_DM_VERITY`
+  - `CONFIG_CRYPTO_SHA256` (must be available at runtime; use `=y`)
+- Purpose: open dm-verity mapping, mount verified squashfs, run llama via UDS, emit
+  signed runtime tar.
+
+7. `runc-llama-ima-verify-run` (stage5)
+- Uses custom boot (`image/bzImage`, `image/rootfs.qcow2`).
+- Required kernel options:
+  - `CONFIG_BLK_DEV_LOOP`
+  - `CONFIG_BLK_DEV_DM`
+  - `CONFIG_DM_VERITY`
+  - `CONFIG_CRYPTO_SHA256` (must be available at runtime; use `=y`)
+- Purpose: verify IMA-signed payload, reopen dm-verity mapping, run final UDS
+  inference.
+
+8. `ima-sign` (independent task)
+- Kernel config requirement for task behavior: no additional mandatory chain-specific
+  options.
+- Notes: validates `evmctl ima_sign/ima_verify` debug flow without enabling kernel
+  appraise enforcement policy.
 
 Use this file as the canonical record for Task Chain behavior, contracts, troubleshooting, and change history.
 
@@ -521,3 +596,35 @@ Entry format:
 - `cargo run --bin vmize -- task worker/example/runc-llama-build` -> pass (5-step chain)
 - All stages produce valid `llama-answer.txt` with inference results
 - Stage artifacts properly handed off between chain steps
+
+### 2026-03-03 (dm-verity hash init failure fix + task-wise kernel requirements)
+
+1. Reason
+- Fix stage4/stage5 dm-verity open failure caused by missing runtime SHA256 hash backend.
+- Document exact kernel config requirements per task to avoid regression.
+
+2. Modified files
+- `/Users/sangwan/dev/vmize/worker/example/kernel-build/input/00_build_kernel.sh`
+- `/Users/sangwan/dev/vmize/worker/README.md`
+- `/Users/sangwan/dev/vmize/worker/TASK_CHAIN_TUTORIAL.md`
+
+3. Behavioral changes
+- `kernel-build` now forces crypto options required by dm-verity runtime:
+  - `CONFIG_CRYPTO`
+  - `CONFIG_CRYPTO_ALGAPI`
+  - `CONFIG_CRYPTO_HASH`
+  - `CONFIG_CRYPTO_MANAGER`
+  - `CONFIG_CRYPTO_SHA256`
+- `CONFIG_CRYPTO_SHA256` is now expected as built-in (`=y`) for the custom kernel path.
+- Added a task-by-task kernel config matrix in this tutorial.
+
+4. Verification commands and results
+- `cargo run -p vmize -- task worker/example/kernel-build` -> pass
+- `cp worker/example/kernel-build/output/kernel image/bzImage` -> pass
+- `cargo run -p vmize -- task /tmp/vmize-dm-diag-task` -> pass
+  - `CONFIG_CRYPTO_SHA256=y` confirmed
+  - `veritysetup --debug open ...` -> `Command successful`
+  - no `Cannot initialize hash function` in dmesg
+- `CARGO_BUILD_JOBS=2 cargo run -p vmize -- task worker/example/runc-llama-build` -> pass (5-step chain)
+- `test -s worker/example/runc-llama-ima-verify-run/output/llama-answer.txt` -> pass
+- `test -s worker/example/runc-llama-ima-verify-run/output/ima-verify.log` -> pass

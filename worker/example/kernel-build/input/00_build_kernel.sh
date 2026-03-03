@@ -133,6 +133,11 @@ build_kernel() {
     --enable MD \
     --enable BLK_DEV_DM \
     --enable DM_VERITY \
+    --enable CRYPTO \
+    --enable CRYPTO_ALGAPI \
+    --enable CRYPTO_HASH \
+    --enable CRYPTO_MANAGER \
+    --enable CRYPTO_SHA256 \
     --enable DEVTMPFS \
     --enable DEVTMPFS_MOUNT \
     --enable EXT4_FS \

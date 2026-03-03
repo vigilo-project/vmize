@@ -61,7 +61,7 @@ cargo build --release
 #   image/rootfs.qcow2 and image/bzImage
 #
 # kernel-build enables required kernel options for this chain, including:
-#   USER_NS, CGROUP_BPF, CGROUP_DEVICE, BLK_DEV_DM, DM_VERITY, BLK_DEV_LOOP
+#   USER_NS, CGROUP_BPF, CGROUP_DEVICE, BLK_DEV_DM, DM_VERITY, BLK_DEV_LOOP, CRYPTO_SHA256
 #
 # runc-llama stage tasks are configured with disk_size=20G to avoid qcow2 resize
 # failures when handing off large rootfs artifacts.
@@ -74,6 +74,10 @@ cargo build --release
 #   step5: runc-llama-ima-verify-run (verify tar+cert with IMA, then run UDS inference)
 ./target/release/vmize task worker/example/runc-llama-build
 ```
+
+Per-task kernel config requirements for this chain are documented in
+[`TASK_CHAIN_TUTORIAL.md`](./TASK_CHAIN_TUTORIAL.md) under
+`Per-Task Kernel Config Requirements`.
 
 `worker/example/runc-llama-hardened` expects `rootfs`, `config.json`, and `model.gguf`
 from `runc-llama-build`, hands off to `runc-llama-verity-pack`, and then into
