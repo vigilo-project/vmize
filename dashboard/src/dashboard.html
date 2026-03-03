@@ -222,6 +222,88 @@
       margin-bottom: 6px;
     }
 
+    .chain-steps {
+      display: grid;
+      gap: 4px;
+      margin-bottom: 8px;
+    }
+
+    .chain-step-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.75em;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      padding: 4px 6px;
+      background: #0d1117;
+    }
+
+    .chain-step-row.step-queued {
+      border-color: #30363d;
+      color: #8b949e;
+    }
+
+    .chain-step-row.step-running {
+      border-color: #1f6feb;
+      color: #79c0ff;
+    }
+
+    .chain-step-row.step-succeeded {
+      border-color: #238636;
+      color: #56d364;
+    }
+
+    .chain-step-row.step-failed {
+      border-color: #da3633;
+      color: #ff7b72;
+    }
+
+    .chain-step-index {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 18px;
+      height: 18px;
+      border-radius: 999px;
+      border: 1px solid #30363d;
+      font-size: 0.74em;
+      flex-shrink: 0;
+    }
+
+    .chain-step-name {
+      flex: 1;
+      min-width: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .chain-step-status {
+      font-size: 0.72em;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+      flex-shrink: 0;
+    }
+
+    .chain-step-error {
+      font-size: 0.72em;
+      color: #ff7b72;
+      margin: 1px 0 0 27px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .chain-step-meta {
+      font-size: 0.72em;
+      color: #6e7681;
+      margin: 1px 0 0 27px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
     .task-phase {
       font-size: 0.8em;
       color: #58a6ff;
@@ -373,6 +455,8 @@
             chain_step_index: j.chain_step_index || 0,
             chain_step_total: j.chain_step_total || 0,
             chain_current_task: j.chain_current_task || null,
+            chain_steps:    normalizeChainSteps(j.chain_steps, j.chain_step_total || 0),
+            chain_failed_step_index: j.chain_failed_step_index || null,
             vm_progress:    Array.from(j.vm_progress_lines || []),
             script_logs:    Array.from(j.script_output_lines || []),
             elapsed_ms:     j.elapsed_ms,
@@ -408,6 +492,7 @@
               state: 'queued', phase: null,
               script_index: 0, script_total: 0, current_script: null,
               chain_step_index: 0, chain_step_total: 0, chain_current_task: null,
+              chain_steps: [], chain_failed_step_index: null,
               vm_progress: [], script_logs: [],
               elapsed_ms: null, error: null, output: null,
             };
@@ -451,9 +536,7 @@
         case 'chain_step':
           if (tasks[ev.id]) {
             if (tasks[ev.id].state === 'queued') tasks[ev.id].state = 'running';
-            tasks[ev.id].chain_step_index = ev.step_index;
-            tasks[ev.id].chain_step_total = ev.total_steps;
-            tasks[ev.id].chain_current_task = ev.task_name || null;
+            applyChainStepStarted(tasks[ev.id], ev);
             renderTask(ev.id);
           }
           break;
@@ -464,6 +547,18 @@
             tasks[ev.id].elapsed_ms = ev.elapsed_ms || null;
             tasks[ev.id].output     = ev.output || null;
             tasks[ev.id].error      = ev.error  || null;
+            if (Array.isArray(ev.chain_steps)) {
+              tasks[ev.id].chain_steps = normalizeChainSteps(ev.chain_steps, tasks[ev.id].chain_step_total || 0);
+            } else if (!ev.success) {
+              const runningStep = tasks[ev.id].chain_steps.find(s => s.state === 'running');
+              if (runningStep) {
+                runningStep.state = 'failed';
+                runningStep.error = ev.error || null;
+              }
+            } else if (tasks[ev.id].chain_steps.length > 0) {
+              tasks[ev.id].chain_steps.forEach(s => { s.state = 'succeeded'; s.error = null; });
+            }
+            tasks[ev.id].chain_failed_step_index = ev.chain_failed_step_index || null;
             renderTask(ev.id);
           }
           {
@@ -474,6 +569,66 @@
           updateControls();
           break;
       }
+    }
+
+    function normalizeChainStepState(value) {
+      if (value === 'running' || value === 'succeeded' || value === 'failed') {
+        return value;
+      }
+      return 'queued';
+    }
+
+    function normalizeChainSteps(rawSteps, totalSteps) {
+      const steps = Array.isArray(rawSteps)
+        ? rawSteps.map((step, idx) => ({
+            index: Number(step.index) || (idx + 1),
+            task_name: step.task_name || null,
+            task_dir: step.task_dir || null,
+            state: normalizeChainStepState(step.state),
+            error: step.error || null,
+          }))
+        : [];
+      const total = Math.max(Number(totalSteps) || 0, steps.length);
+      for (let index = steps.length + 1; index <= total; index++) {
+        steps.push({ index, task_name: null, task_dir: null, state: 'queued', error: null });
+      }
+      return steps;
+    }
+
+    function ensureChainSteps(task, totalSteps) {
+      if (!Array.isArray(task.chain_steps)) task.chain_steps = [];
+      const total = Math.max(Number(totalSteps) || 0, task.chain_steps.length);
+      for (let index = task.chain_steps.length + 1; index <= total; index++) {
+        task.chain_steps.push({ index, task_name: null, task_dir: null, state: 'queued', error: null });
+      }
+      task.chain_step_total = total;
+    }
+
+    function applyChainStepStarted(task, ev) {
+      ensureChainSteps(task, ev.total_steps);
+      task.chain_steps.forEach(step => {
+        if (step.state === 'running' && step.index !== ev.step_index) {
+          step.state = 'succeeded';
+          step.error = null;
+        }
+      });
+      const idx = Number(ev.step_index) - 1;
+      if (idx >= 0 && idx < task.chain_steps.length) {
+        task.chain_steps[idx].state = 'running';
+        task.chain_steps[idx].task_name = ev.task_name || null;
+        task.chain_steps[idx].task_dir = ev.task_dir || null;
+        task.chain_steps[idx].error = null;
+      }
+      task.chain_step_index = Number(ev.step_index) || 0;
+      task.chain_current_task = ev.task_name || null;
+      task.chain_failed_step_index = null;
+    }
+
+    function chainStepStatusLabel(state) {
+      if (state === 'running') return 'running';
+      if (state === 'succeeded') return 'done';
+      if (state === 'failed') return 'failed';
+      return 'queued';
     }
 
     // ── Render ───────────────────────────────────────────────────────────────
@@ -505,8 +660,25 @@
       const chainLabel =
         j.chain_step_total > 1
           ? 'chain: ' + j.chain_step_index + '/' + j.chain_step_total +
-            (j.chain_current_task ? ' · ' + esc(j.chain_current_task) : '')
+            (j.chain_current_task ? ' · ' + esc(j.chain_current_task) : '') +
+            (j.chain_failed_step_index ? ' · failed@' + j.chain_failed_step_index : '')
           : '';
+      const chainStepsHtml = j.chain_steps.length > 0
+        ? '<div class="chain-steps">' + j.chain_steps.map(step => {
+            const name = step.task_name || ('step-' + step.index);
+            const taskDir = step.task_dir ? '<div class="chain-step-meta">' + esc(step.task_dir) + '</div>' : '';
+            const error = step.error ? '<div class="chain-step-error">' + esc(step.error) + '</div>' : '';
+            return (
+              '<div class="chain-step-row step-' + esc(step.state) + '">' +
+                '<span class="chain-step-index">' + step.index + '</span>' +
+                '<span class="chain-step-name">' + esc(name) + '</span>' +
+                '<span class="chain-step-status">' + chainStepStatusLabel(step.state) + '</span>' +
+              '</div>' +
+              (step.state === 'running' ? taskDir : '') +
+              (step.state === 'failed' ? error : '')
+            );
+          }).join('') + '</div>'
+        : '';
 
       const vmProgressHtml = j.vm_progress.length > 0
         ? j.vm_progress.map(l => '<div class="log-line">' + esc(l) + '</div>').join('')
@@ -529,6 +701,7 @@
         '</div>' +
         (j.description ? '<div class="task-desc">' + esc(j.description) + '</div>' : '') +
         (chainLabel ? '<div class="task-chain">' + chainLabel + '</div>' : '') +
+        chainStepsHtml +
         '<div class="task-phase">' + (j.phase ? 'phase: ' + j.phase : (j.state === 'queued' ? 'waiting…' : '')) + '</div>' +
         '<div class="progress-wrap">' +
           '<div class="progress-bar"><div class="progress-fill" style="width:' + pct + '%"></div></div>' +

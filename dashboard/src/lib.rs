@@ -21,7 +21,7 @@ use task::load_task;
 use tokio::sync::broadcast;
 
 use worker::{
-    ChainStepProgress, MAX_BATCH_TASKS, RunPhase, RunProgress, TaskRunOptions,
+    ChainRunResult, ChainStepProgress, MAX_BATCH_TASKS, RunPhase, RunProgress, TaskRunOptions,
     run_task_chain_blocking_with_progress,
 };
 
@@ -74,6 +74,10 @@ enum DashboardSseEvent {
         output: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        chain_steps: Vec<ChainStepEntry>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        chain_failed_step_index: Option<usize>,
     },
 }
 
@@ -119,6 +123,27 @@ enum TaskState {
     Failed,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum ChainStepState {
+    Queued,
+    Running,
+    Succeeded,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct ChainStepEntry {
+    index: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    task_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    task_dir: Option<String>,
+    state: ChainStepState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct TaskEntry {
     id: usize,
@@ -133,6 +158,8 @@ struct TaskEntry {
     chain_step_index: usize,
     chain_step_total: usize,
     chain_current_task: Option<String>,
+    chain_steps: Vec<ChainStepEntry>,
+    chain_failed_step_index: Option<usize>,
     vm_progress_lines: Vec<String>,
     script_output_lines: Vec<String>,
     elapsed_ms: Option<u64>,
@@ -313,6 +340,8 @@ async fn add_task(State(app): State<AppState>, Json(req): Json<AddTaskRequest>) 
         chain_step_index: 0,
         chain_step_total: 0,
         chain_current_task: None,
+        chain_steps: Vec::new(),
+        chain_failed_step_index: None,
         vm_progress_lines: Vec::new(),
         script_output_lines: Vec::new(),
         elapsed_ms: None,
@@ -415,6 +444,8 @@ async fn run_tasks(State(app): State<AppState>) -> Response {
                     elapsed_ms: None,
                     output: None,
                     error: Some(message),
+                    chain_steps: Vec::new(),
+                    chain_failed_step_index: None,
                 },
             );
             maybe_clear_running(&mut s);
@@ -503,16 +534,15 @@ fn run_task_worker(id: usize, task_path: PathBuf, app: AppState) {
                 .last()
                 .map(|step| step.run_result.output_dir.display().to_string())
                 .unwrap_or_else(|| task_path.join("output").display().to_string());
-            let total_steps = chain_result.steps.len();
+            let mut chain_steps = Vec::new();
+            let mut chain_failed_step_index = None;
             if let Some(task) = s.tasks.iter_mut().find(|j| j.id == id) {
                 task.state = TaskState::Succeeded;
                 task.elapsed_ms = Some(elapsed_ms);
                 task.output = Some(output_path.clone());
-                task.chain_step_index = total_steps;
-                task.chain_step_total = total_steps;
-                if let Some(last_step) = chain_result.steps.last() {
-                    task.chain_current_task = last_step.task_name.clone();
-                }
+                sync_chain_steps_from_result(task, &chain_result);
+                chain_steps = task.chain_steps.clone();
+                chain_failed_step_index = task.chain_failed_step_index;
             }
             s.push_event(
                 &app.sse_tx,
@@ -522,15 +552,22 @@ fn run_task_worker(id: usize, task_path: PathBuf, app: AppState) {
                     elapsed_ms: Some(elapsed_ms),
                     output: Some(output_path),
                     error: None,
+                    chain_steps,
+                    chain_failed_step_index,
                 },
             );
         }
         Err(err) => {
             let err_str = err.to_string();
+            let mut chain_steps = Vec::new();
+            let mut chain_failed_step_index = None;
             if let Some(task) = s.tasks.iter_mut().find(|j| j.id == id) {
                 task.state = TaskState::Failed;
                 task.elapsed_ms = Some(elapsed_ms);
                 task.error = Some(err_str.clone());
+                mark_chain_failure(task, &err_str);
+                chain_steps = task.chain_steps.clone();
+                chain_failed_step_index = task.chain_failed_step_index;
             }
             s.push_event(
                 &app.sse_tx,
@@ -540,6 +577,8 @@ fn run_task_worker(id: usize, task_path: PathBuf, app: AppState) {
                     elapsed_ms: Some(elapsed_ms),
                     output: None,
                     error: Some(err_str),
+                    chain_steps,
+                    chain_failed_step_index,
                 },
             );
         }
@@ -623,6 +662,92 @@ fn forward_progress(id: usize, progress: &RunProgress, app: &AppState) {
     s.push_event(&app.sse_tx, event);
 }
 
+fn ensure_chain_steps(task: &mut TaskEntry, total_steps: usize) {
+    if total_steps <= task.chain_steps.len() {
+        return;
+    }
+    let start_index = task.chain_steps.len() + 1;
+    for index in start_index..=total_steps {
+        task.chain_steps.push(ChainStepEntry {
+            index,
+            task_name: None,
+            task_dir: None,
+            state: ChainStepState::Queued,
+            error: None,
+        });
+    }
+}
+
+fn mark_prior_running_steps_succeeded(task: &mut TaskEntry, next_step_index: usize) {
+    for step in &mut task.chain_steps {
+        if step.state == ChainStepState::Running && step.index != next_step_index {
+            step.state = ChainStepState::Succeeded;
+            step.error = None;
+        }
+    }
+}
+
+fn sync_chain_steps_from_result(task: &mut TaskEntry, chain_result: &ChainRunResult) {
+    let total_steps = chain_result.steps.len();
+    if total_steps == 0 {
+        task.chain_step_index = 0;
+        task.chain_step_total = 0;
+        task.chain_current_task = None;
+        task.chain_steps.clear();
+        task.chain_failed_step_index = None;
+        return;
+    }
+
+    ensure_chain_steps(task, total_steps);
+    for (idx, step_result) in chain_result.steps.iter().enumerate() {
+        if let Some(step) = task.chain_steps.get_mut(idx) {
+            step.task_name = step_result.task_name.clone();
+            step.task_dir = Some(step_result.task_dir.display().to_string());
+            step.state = ChainStepState::Succeeded;
+            step.error = None;
+        }
+    }
+    task.chain_steps.truncate(total_steps);
+    task.chain_step_index = total_steps;
+    task.chain_step_total = total_steps;
+    task.chain_current_task = chain_result
+        .steps
+        .last()
+        .and_then(|step| step.task_name.clone());
+    task.chain_failed_step_index = None;
+}
+
+fn mark_chain_failure(task: &mut TaskEntry, error: &str) {
+    let mut failed_index = None;
+
+    if let Some(step) = task
+        .chain_steps
+        .iter_mut()
+        .find(|step| step.state == ChainStepState::Running)
+    {
+        step.state = ChainStepState::Failed;
+        step.error = Some(error.to_string());
+        failed_index = Some(step.index);
+    } else if let Some(position) = task.chain_step_index.checked_sub(1)
+        && let Some(step) = task.chain_steps.get_mut(position)
+        && step.state != ChainStepState::Succeeded
+    {
+        step.state = ChainStepState::Failed;
+        step.error = Some(error.to_string());
+        failed_index = Some(step.index);
+    }
+
+    task.chain_failed_step_index = failed_index;
+    if let Some(index) = failed_index {
+        task.chain_step_index = index;
+        if let Some(position) = index.checked_sub(1)
+            && let Some(step) = task.chain_steps.get(position)
+        {
+            task.chain_current_task = step.task_name.clone();
+        }
+    }
+}
+
 fn forward_chain_step(id: usize, step: &ChainStepProgress, app: &AppState) {
     let mut s = app.state.write().unwrap();
 
@@ -635,9 +760,20 @@ fn forward_chain_step(id: usize, step: &ChainStepProgress, app: &AppState) {
         } => {
             let phase = format!("ChainStep {step_index}/{total_steps}");
             if let Some(task) = s.tasks.iter_mut().find(|j| j.id == id) {
+                ensure_chain_steps(task, *total_steps);
+                mark_prior_running_steps_succeeded(task, *step_index);
+                if let Some(position) = step_index.checked_sub(1)
+                    && let Some(chain_step) = task.chain_steps.get_mut(position)
+                {
+                    chain_step.task_name = task_name.clone();
+                    chain_step.task_dir = Some(task_dir.display().to_string());
+                    chain_step.state = ChainStepState::Running;
+                    chain_step.error = None;
+                }
                 task.chain_step_index = *step_index;
                 task.chain_step_total = *total_steps;
                 task.chain_current_task = task_name.clone();
+                task.chain_failed_step_index = None;
                 task.phase = Some(phase);
             }
             s.push_event(
@@ -735,6 +871,8 @@ mod tests {
             chain_step_index: 0,
             chain_step_total: 0,
             chain_current_task: None,
+            chain_steps: Vec::new(),
+            chain_failed_step_index: None,
             vm_progress_lines: Vec::new(),
             script_output_lines: Vec::new(),
             elapsed_ms: None,
@@ -858,6 +996,12 @@ mod tests {
         assert_eq!(s.tasks[0].chain_step_total, 3);
         assert_eq!(s.tasks[0].chain_current_task, Some("task-two".to_string()));
         assert_eq!(s.tasks[0].phase, Some("ChainStep 2/3".to_string()));
+        assert_eq!(s.tasks[0].chain_steps.len(), 3);
+        assert_eq!(s.tasks[0].chain_steps[1].state, ChainStepState::Running);
+        assert_eq!(
+            s.tasks[0].chain_steps[1].task_name.as_deref(),
+            Some("task-two")
+        );
 
         let evt: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
         assert_eq!(evt["type"], "chain_step");
@@ -866,6 +1010,78 @@ mod tests {
         assert_eq!(evt["total_steps"], 3);
         assert_eq!(evt["task_name"], "task-two");
         assert_eq!(evt["task_dir"], "/tmp/task-2");
+    }
+
+    #[test]
+    fn forward_chain_step_marks_previous_running_step_succeeded() {
+        let (app, _rx) = make_app();
+        {
+            let mut s = app.state.write().unwrap();
+            let mut task = make_task(0, TaskState::Running);
+            task.chain_steps = vec![
+                ChainStepEntry {
+                    index: 1,
+                    task_name: Some("task-one".to_string()),
+                    task_dir: Some("/tmp/task-1".to_string()),
+                    state: ChainStepState::Running,
+                    error: None,
+                },
+                ChainStepEntry {
+                    index: 2,
+                    task_name: None,
+                    task_dir: None,
+                    state: ChainStepState::Queued,
+                    error: None,
+                },
+            ];
+            task.chain_step_total = 2;
+            task.chain_step_index = 1;
+            s.tasks.push(task);
+        }
+
+        forward_chain_step(
+            0,
+            &ChainStepProgress::StepStarted {
+                step_index: 2,
+                total_steps: 2,
+                task_dir: PathBuf::from("/tmp/task-2"),
+                task_name: Some("task-two".to_string()),
+            },
+            &app,
+        );
+
+        let s = app.state.read().unwrap();
+        assert_eq!(s.tasks[0].chain_steps[0].state, ChainStepState::Succeeded);
+        assert_eq!(s.tasks[0].chain_steps[1].state, ChainStepState::Running);
+    }
+
+    #[test]
+    fn mark_chain_failure_marks_running_step_as_failed() {
+        let mut task = make_task(0, TaskState::Running);
+        task.chain_steps = vec![
+            ChainStepEntry {
+                index: 1,
+                task_name: Some("task-one".to_string()),
+                task_dir: Some("/tmp/task-1".to_string()),
+                state: ChainStepState::Succeeded,
+                error: None,
+            },
+            ChainStepEntry {
+                index: 2,
+                task_name: Some("task-two".to_string()),
+                task_dir: Some("/tmp/task-2".to_string()),
+                state: ChainStepState::Running,
+                error: None,
+            },
+        ];
+        task.chain_step_total = 2;
+        task.chain_step_index = 2;
+
+        mark_chain_failure(&mut task, "boom");
+
+        assert_eq!(task.chain_failed_step_index, Some(2));
+        assert_eq!(task.chain_steps[1].state, ChainStepState::Failed);
+        assert_eq!(task.chain_steps[1].error.as_deref(), Some("boom"));
     }
 
     // ── maybe_clear_running ───────────────────────────────────────────────────

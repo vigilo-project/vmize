@@ -486,6 +486,13 @@ fn run_api_run_chain_task_succeeds() {
                     task["chain_step_index"], 2,
                     "must finish at final chain step"
                 );
+                let chain_steps = task["chain_steps"]
+                    .as_array()
+                    .expect("chain_steps must be an array");
+                assert_eq!(chain_steps.len(), 2);
+                assert_eq!(chain_steps[0]["state"], "succeeded");
+                assert_eq!(chain_steps[1]["state"], "succeeded");
+                assert_eq!(task["chain_failed_step_index"], serde_json::Value::Null);
                 let output = task["output"]
                     .as_str()
                     .expect("succeeded chain task must have output path");
