@@ -58,10 +58,11 @@ cargo build --release
 ./target/release/vmize task worker/example/kernel-build
 #
 # The runc-llama tasks use custom boot files expected at:
-#   image/rootfs.qcow2 and image/bzImage
+#   image/rootfs.qcow2, image/bzImage, and image/kernel.config
 #
 # kernel-build enables required kernel options for this chain, including:
 #   USER_NS, CGROUP_BPF, CGROUP_DEVICE, BLK_DEV_DM, DM_VERITY, BLK_DEV_LOOP, CRYPTO_SHA256
+# and exports kernel.config for task preflight checks.
 #
 # runc-llama stage tasks are configured with disk_size=20G to avoid qcow2 resize
 # failures when handing off large rootfs artifacts.
@@ -128,14 +129,24 @@ For custom boot tasks:
     "boot": "custom",
     "kernel": "../../../image/bzImage",
     "rootfs": "../../../image/rootfs.qcow2",
+    "kernel_config": "../../../image/kernel.config",
+    "required_kernel_config": [
+      "CONFIG_DM_VERITY=y",
+      "CONFIG_CRYPTO_SHA256=y"
+    ],
     "clone_rootfs": true
   }
 }
 ```
 
 `vm.kernel`/`vm.rootfs` paths are resolved relative to the task directory (absolute paths are also allowed).
+`vm.kernel_config` points to a kernel `.config`-style text file used for static preflight checks.
+`vm.required_kernel_config` declares required options in `CONFIG_FOO=y|m|n` format.
 When `clone_rootfs` is `true` (default), worker runs each task step on a temporary rootfs copy.
 With custom boot, `disk_size` is applied by resizing that temporary copy.
+When `vm.required_kernel_config` is set, worker checks both:
+- static preflight on host (`vm.kernel_config`) before VM boot.
+- runtime probe in guest (`/proc/config.gz` or `/boot/config-$(uname -r)`) before running scripts.
 
 ## Verification Commands
 

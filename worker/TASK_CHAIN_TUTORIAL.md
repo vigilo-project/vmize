@@ -20,6 +20,7 @@ Before running the `runc-llama` chain, run the image preparation tasks first:
 These tasks prepare custom boot files used by the chain:
 - `image/rootfs.qcow2`
 - `image/bzImage`
+- `image/kernel.config`
 
 `kernel-build` applies required config overrides for this chain:
 - `CONFIG_USER_NS`
@@ -37,6 +38,8 @@ using the handed-off rootfs artifacts.
 
 This section defines the minimum kernel config expectations per task in the
 `runc-llama` 5-stage chain path.
+The same requirements are declared directly in each stage `task.json` via
+`vm.required_kernel_config` with `vm.kernel_config`.
 
 1. `rootfs-build`
 - Kernel config requirement: none (runs in default Ubuntu boot profile).

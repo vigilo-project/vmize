@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
@@ -15,6 +15,38 @@ const VM_OUTPUT_DIR: &str = "/tmp/vmize-worker/out";
 const VM_LOGS_DIR: &str = "/tmp/vmize-worker/logs";
 static OVERLAY_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 static ROOTFS_CLONE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KernelConfigValue {
+    Yes,
+    Module,
+    No,
+}
+
+impl KernelConfigValue {
+    fn from_char(value: char) -> Option<Self> {
+        match value {
+            'y' => Some(Self::Yes),
+            'm' => Some(Self::Module),
+            'n' => Some(Self::No),
+            _ => None,
+        }
+    }
+
+    fn as_char(self) -> char {
+        match self {
+            Self::Yes => 'y',
+            Self::Module => 'm',
+            Self::No => 'n',
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct KernelConfigRequirement {
+    symbol: String,
+    expected: KernelConfigValue,
+}
 
 #[derive(Debug, Clone)]
 struct VmLaunchOptions {
@@ -197,17 +229,16 @@ pub fn run_task_chain_blocking_with_progress(
             message: format!("Task chain failed at {}: {err}", current_task_dir.display()),
         })?;
 
-        let (handoff_artifacts, next_handoff) =
-            if loaded.definition.next_task_dir.is_some() {
-                let artifacts = collect_handoff_artifacts(&loaded)?;
-                let names = artifacts
-                    .iter()
-                    .map(|a| a.relative_path.to_string_lossy().to_string())
-                    .collect();
-                (names, Some(artifacts))
-            } else {
-                (Vec::new(), None)
-            };
+        let (handoff_artifacts, next_handoff) = if loaded.definition.next_task_dir.is_some() {
+            let artifacts = collect_handoff_artifacts(&loaded)?;
+            let names = artifacts
+                .iter()
+                .map(|a| a.relative_path.to_string_lossy().to_string())
+                .collect();
+            (names, Some(artifacts))
+        } else {
+            (Vec::new(), None)
+        };
         pending_handoff = next_handoff;
 
         chain_result.steps.push(ChainStepResult {
@@ -237,6 +268,8 @@ pub async fn run_loaded_task_with_ops<V: VmOps + ?Sized>(
     let input_dir = &task.input_dir;
     let output_dir = &task.output_dir;
     let logs_dir = &task.logs_dir;
+    let kernel_requirements = resolve_kernel_config_requirements(task)?;
+    verify_kernel_config_static(task, &kernel_requirements)?;
     let vm_launch = prepare_vm_launch_options(task, &options)?;
     let _temporary_rootfs_cleanup =
         TemporaryRootfsCleanup::new(vm_launch.temporary_rootfs_path.clone());
@@ -254,8 +287,14 @@ pub async fn run_loaded_task_with_ops<V: VmOps + ?Sized>(
 
     let run_error = match prepare_vm_with_ops(vm_ops, &vm_id, input_dir, &progress_tx).await {
         Ok(()) => {
-            send_progress(&progress_tx, RunProgress::Phase(RunPhase::RunningScripts));
-            execute_commands_with_ops(vm_ops, commands, &record, &progress_tx, &mut result)
+            if let Err(err) =
+                verify_kernel_config_runtime_with_ops(vm_ops, &vm_id, &kernel_requirements).await
+            {
+                Some(err)
+            } else {
+                send_progress(&progress_tx, RunProgress::Phase(RunPhase::RunningScripts));
+                execute_commands_with_ops(vm_ops, commands, &record, &progress_tx, &mut result)
+            }
         }
         Err(err) => Some(err),
     };
@@ -380,6 +419,203 @@ fn resolve_vm_config_path(task: &LoadedTask, field: &str, value: &str) -> Result
     }
 
     Ok(resolved)
+}
+
+fn resolve_kernel_config_requirements(
+    task: &LoadedTask,
+) -> Result<Vec<KernelConfigRequirement>, Error> {
+    let Some(vm) = task.definition.vm.as_ref() else {
+        return Ok(Vec::new());
+    };
+    let Some(requirements) = vm.required_kernel_config.as_ref() else {
+        return Ok(Vec::new());
+    };
+
+    let mut parsed = Vec::with_capacity(requirements.len());
+    for requirement in requirements {
+        parsed.push(parse_kernel_config_requirement(requirement)?);
+    }
+    Ok(parsed)
+}
+
+fn parse_kernel_config_requirement(value: &str) -> Result<KernelConfigRequirement, Error> {
+    let value = value.trim();
+    let (symbol, expected_raw) = value.split_once('=').ok_or_else(|| Error::Runtime {
+        message: format!(
+            "Invalid vm.required_kernel_config entry '{value}': expected CONFIG_FOO=y|m|n"
+        ),
+    })?;
+
+    if !symbol.starts_with("CONFIG_")
+        || symbol.len() <= "CONFIG_".len()
+        || !symbol
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+    {
+        return Err(Error::Runtime {
+            message: format!(
+                "Invalid vm.required_kernel_config symbol '{symbol}' in '{value}' (expected CONFIG_FOO)"
+            ),
+        });
+    }
+
+    let expected = match expected_raw {
+        "y" => KernelConfigValue::Yes,
+        "m" => KernelConfigValue::Module,
+        "n" => KernelConfigValue::No,
+        _ => {
+            return Err(Error::Runtime {
+                message: format!(
+                    "Invalid vm.required_kernel_config value '{expected_raw}' in '{value}' (expected y|m|n)"
+                ),
+            });
+        }
+    };
+
+    Ok(KernelConfigRequirement {
+        symbol: symbol.to_string(),
+        expected,
+    })
+}
+
+fn verify_kernel_config_static(
+    task: &LoadedTask,
+    requirements: &[KernelConfigRequirement],
+) -> Result<(), Error> {
+    if requirements.is_empty() {
+        return Ok(());
+    }
+
+    let vm = task.definition.vm.as_ref().ok_or_else(|| Error::Runtime {
+        message: "vm config is required when vm.required_kernel_config is set".to_string(),
+    })?;
+    let kernel_config_value = vm.kernel_config.as_deref().ok_or_else(|| Error::Runtime {
+        message: "vm.kernel_config is required when vm.required_kernel_config is set".to_string(),
+    })?;
+    let kernel_config_path = resolve_vm_config_path(task, "vm.kernel_config", kernel_config_value)?;
+    let config_text = fs::read_to_string(&kernel_config_path).map_err(|err| Error::Runtime {
+        message: format!(
+            "Failed to read vm.kernel_config {}: {err}",
+            kernel_config_path.display()
+        ),
+    })?;
+    let parsed = parse_kernel_config_text(&config_text);
+    let mismatches = collect_kernel_config_mismatches(&parsed, requirements);
+    if mismatches.is_empty() {
+        return Ok(());
+    }
+
+    Err(Error::Runtime {
+        message: format!(
+            "Kernel config preflight failed for {} using {}: {}",
+            task.definition.name.as_deref().unwrap_or("<unnamed-task>"),
+            kernel_config_path.display(),
+            mismatches.join(", ")
+        ),
+    })
+}
+
+async fn verify_kernel_config_runtime_with_ops<V: VmOps + ?Sized>(
+    vm_ops: &V,
+    vm_id: &str,
+    requirements: &[KernelConfigRequirement],
+) -> Result<(), Error> {
+    if requirements.is_empty() {
+        return Ok(());
+    }
+
+    const MISSING_SENTINEL: &str = "__VMIZE_KERNEL_CONFIG_UNAVAILABLE__";
+    let command = format!(
+        "if [ -r /proc/config.gz ]; then zcat /proc/config.gz; \
+         elif [ -r /boot/config-$(uname -r) ]; then cat /boot/config-$(uname -r); \
+         else echo {MISSING_SENTINEL}; fi"
+    );
+
+    let output = vm_ops
+        .ssh(vm_id, &command)
+        .await
+        .map_err(|err| Error::Runtime {
+            message: format!("Failed runtime kernel-config probe in VM {vm_id}: {err}"),
+        })?;
+    if output.contains(MISSING_SENTINEL) {
+        return Err(Error::Runtime {
+            message: format!(
+                "Runtime kernel config probe failed in VM {vm_id}: /proc/config.gz and /boot/config-$(uname -r) are unavailable (enable CONFIG_IKCONFIG_PROC=y or provide runtime config file)"
+            ),
+        });
+    }
+
+    let parsed = parse_kernel_config_text(&output);
+    let mismatches = collect_kernel_config_mismatches(&parsed, requirements);
+    if mismatches.is_empty() {
+        return Ok(());
+    }
+
+    Err(Error::Runtime {
+        message: format!(
+            "Runtime kernel config check failed in VM {vm_id}: {}",
+            mismatches.join(", ")
+        ),
+    })
+}
+
+fn parse_kernel_config_text(contents: &str) -> HashMap<String, KernelConfigValue> {
+    let mut values = HashMap::new();
+
+    for raw_line in contents.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        if let Some(rest) = line.strip_prefix("# CONFIG_")
+            && let Some(symbol) = rest.strip_suffix(" is not set")
+        {
+            values.insert(format!("CONFIG_{symbol}"), KernelConfigValue::No);
+            continue;
+        }
+
+        if let Some((symbol, value)) = line.split_once('=')
+            && symbol.starts_with("CONFIG_")
+            && symbol
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+        {
+            if value.len() == 1
+                && let Some(parsed) = value.chars().next().and_then(KernelConfigValue::from_char)
+            {
+                values.insert(symbol.to_string(), parsed);
+            }
+        }
+    }
+
+    values
+}
+
+fn collect_kernel_config_mismatches(
+    actual: &HashMap<String, KernelConfigValue>,
+    requirements: &[KernelConfigRequirement],
+) -> Vec<String> {
+    let mut mismatches = Vec::new();
+
+    for requirement in requirements {
+        match actual.get(&requirement.symbol) {
+            Some(value) if *value == requirement.expected => {}
+            Some(value) => mismatches.push(format!(
+                "{} expected={} actual={}",
+                requirement.symbol,
+                requirement.expected.as_char(),
+                value.as_char()
+            )),
+            None => mismatches.push(format!(
+                "{} expected={} actual=<missing>",
+                requirement.symbol,
+                requirement.expected.as_char()
+            )),
+        }
+    }
+
+    mismatches
 }
 
 fn clone_rootfs_for_task(rootfs: &Path, task_name: Option<&str>) -> Result<PathBuf, Error> {
@@ -1033,6 +1269,38 @@ mod tests {
     // ── shell_quote ────────────────────────────────────────────────────────────
 
     #[test]
+    fn parse_kernel_config_text_parses_yes_module_and_not_set_values() {
+        let parsed = parse_kernel_config_text(
+            r#"
+            CONFIG_DM_VERITY=y
+            CONFIG_BLK_DEV_LOOP=m
+            # CONFIG_USER_NS is not set
+            "#,
+        );
+
+        assert_eq!(
+            parsed.get("CONFIG_DM_VERITY"),
+            Some(&KernelConfigValue::Yes)
+        );
+        assert_eq!(
+            parsed.get("CONFIG_BLK_DEV_LOOP"),
+            Some(&KernelConfigValue::Module)
+        );
+        assert_eq!(parsed.get("CONFIG_USER_NS"), Some(&KernelConfigValue::No));
+    }
+
+    #[test]
+    fn parse_kernel_config_requirement_rejects_config_prefix_only() {
+        let err = parse_kernel_config_requirement("CONFIG_=y").unwrap_err();
+        match err {
+            Error::Runtime { message } => {
+                assert!(message.contains("Invalid vm.required_kernel_config symbol"))
+            }
+            other => panic!("Expected Runtime error, got: {other}"),
+        }
+    }
+
+    #[test]
     fn shell_quote_wraps_in_single_quotes() {
         assert_eq!(shell_quote("hello"), "'hello'");
     }
@@ -1638,6 +1906,8 @@ mod tests {
             boot: TaskVmBoot::Custom,
             kernel: Some("kernel/bzImage".to_string()),
             rootfs: Some("rootfs.qcow2".to_string()),
+            kernel_config: None,
+            required_kernel_config: None,
             clone_rootfs: false,
         });
 
@@ -1674,6 +1944,8 @@ mod tests {
             boot: TaskVmBoot::Custom,
             kernel: Some("bzImage".to_string()),
             rootfs: Some("rootfs.qcow2".to_string()),
+            kernel_config: None,
+            required_kernel_config: None,
             clone_rootfs: true,
         });
 
@@ -1714,6 +1986,8 @@ mod tests {
             boot: TaskVmBoot::Custom,
             kernel: Some("bzImage".to_string()),
             rootfs: Some("rootfs.qcow2".to_string()),
+            kernel_config: None,
+            required_kernel_config: None,
             clone_rootfs: true,
         });
 
@@ -1750,6 +2024,8 @@ mod tests {
             boot: TaskVmBoot::Custom,
             kernel: Some("bzImage".to_string()),
             rootfs: Some("rootfs.qcow2".to_string()),
+            kernel_config: None,
+            required_kernel_config: None,
             clone_rootfs: false,
         });
 
@@ -1774,5 +2050,92 @@ mod tests {
         }
 
         assert!(mock.run_calls().is_empty());
+    }
+
+    #[test]
+    fn run_loaded_task_with_ops_fails_static_kernel_config_preflight_before_vm_start() {
+        let (temp, mut task) = create_test_loaded_task(&["00_first.sh"]);
+        let kernel_path = temp.path().join("bzImage");
+        let rootfs_path = temp.path().join("rootfs.qcow2");
+        let kernel_config_path = temp.path().join("kernel.config");
+        fs::write(&kernel_path, "kernel").unwrap();
+        fs::write(&rootfs_path, "rootfs").unwrap();
+        fs::write(&kernel_config_path, "CONFIG_DM_VERITY=m\n").unwrap();
+        task.definition.vm = Some(task::TaskVmConfig {
+            boot: TaskVmBoot::Custom,
+            kernel: Some("bzImage".to_string()),
+            rootfs: Some("rootfs.qcow2".to_string()),
+            kernel_config: Some("kernel.config".to_string()),
+            required_kernel_config: Some(vec!["CONFIG_DM_VERITY=y".to_string()]),
+            clone_rootfs: false,
+        });
+
+        let mock = MockVmOps::new().with_run_ok("test-vm");
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let err = rt
+            .block_on(run_loaded_task_with_ops(
+                &mock,
+                &task,
+                TaskRunOptions::default(),
+                None,
+            ))
+            .unwrap_err();
+
+        match err {
+            Error::Runtime { message } => {
+                assert!(message.contains("Kernel config preflight failed"));
+                assert!(message.contains("CONFIG_DM_VERITY expected=y actual=m"));
+            }
+            other => panic!("Expected Runtime error, got: {other}"),
+        }
+
+        assert!(mock.run_calls().is_empty());
+    }
+
+    #[test]
+    fn run_loaded_task_with_ops_fails_runtime_kernel_config_check_before_scripts() {
+        let (temp, mut task) = create_test_loaded_task(&["00_first.sh"]);
+        let kernel_path = temp.path().join("bzImage");
+        let rootfs_path = temp.path().join("rootfs.qcow2");
+        let kernel_config_path = temp.path().join("kernel.config");
+        fs::write(&kernel_path, "kernel").unwrap();
+        fs::write(&rootfs_path, "rootfs").unwrap();
+        fs::write(&kernel_config_path, "CONFIG_DM_VERITY=y\n").unwrap();
+        task.definition.vm = Some(task::TaskVmConfig {
+            boot: TaskVmBoot::Custom,
+            kernel: Some("bzImage".to_string()),
+            rootfs: Some("rootfs.qcow2".to_string()),
+            kernel_config: Some("kernel.config".to_string()),
+            required_kernel_config: Some(vec!["CONFIG_DM_VERITY=y".to_string()]),
+            clone_rootfs: false,
+        });
+
+        let mock = MockVmOps::new()
+            .with_run_ok("test-vm")
+            .with_ssh_ok("")
+            .with_ssh_ok("CONFIG_DM_VERITY=m\n");
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let err = rt
+            .block_on(run_loaded_task_with_ops(
+                &mock,
+                &task,
+                TaskRunOptions::default(),
+                None,
+            ))
+            .unwrap_err();
+
+        match err {
+            Error::Runtime { message } => {
+                assert!(message.contains("Runtime kernel config check failed"));
+                assert!(message.contains("CONFIG_DM_VERITY expected=y actual=m"));
+            }
+            other => panic!("Expected Runtime error, got: {other}"),
+        }
+
+        assert_eq!(mock.run_calls().len(), 1);
+        assert_eq!(mock.rm_calls(), vec!["test-vm"]);
+        assert!(mock.stream_commands.lock().unwrap().is_empty());
     }
 }

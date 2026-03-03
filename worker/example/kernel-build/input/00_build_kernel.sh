@@ -5,6 +5,7 @@ WORK_DIR="/tmp/vmize-worker/work"
 OUTPUT_DIR="/tmp/vmize-worker/out"
 KERNEL_DIR="${WORK_DIR}/linux"
 OUTPUT_IMAGE="${OUTPUT_DIR}/kernel"
+OUTPUT_KERNEL_CONFIG="${OUTPUT_DIR}/kernel.config"
 INFO_FILE="${OUTPUT_DIR}/kernel-build-info.txt"
 KERNEL_REPO="${KERNEL_REPO:-https://github.com/torvalds/linux.git}"
 KERNEL_BRANCH="${KERNEL_BRANCH:-master}"
@@ -160,10 +161,12 @@ build_kernel() {
   fi
 
   cp "${source_path}" "${OUTPUT_IMAGE}"
+  cp "${KERNEL_DIR}/.config" "${OUTPUT_KERNEL_CONFIG}"
 
   printf 'kernel_arch=%s\n' "${KERNEL_ARCH}" > "${INFO_FILE}"
   printf 'kernel_target=%s\n' "${KERNEL_TARGET}" >> "${INFO_FILE}"
   printf 'kernel_image=%s\n' "${OUTPUT_IMAGE}" >> "${INFO_FILE}"
+  printf 'kernel_config=%s\n' "${OUTPUT_KERNEL_CONFIG}" >> "${INFO_FILE}"
   printf 'kernel_repo=%s\n' "${KERNEL_REPO}" >> "${INFO_FILE}"
   printf 'kernel_branch=%s\n' "${KERNEL_BRANCH}" >> "${INFO_FILE}"
   printf 'source_tree=%s\n' "${KERNEL_DIR}" >> "${INFO_FILE}"

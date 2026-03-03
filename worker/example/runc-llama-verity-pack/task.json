@@ -6,6 +6,10 @@
     "boot": "custom",
     "kernel": "../../../image/bzImage",
     "rootfs": "../../../image/rootfs.qcow2",
+    "kernel_config": "../../../image/kernel.config",
+    "required_kernel_config": [
+      "CONFIG_BLK_DEV_LOOP=y"
+    ],
     "clone_rootfs": true
   },
   "commands": [

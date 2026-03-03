@@ -23,6 +23,10 @@ pub struct TaskVmConfig {
     pub kernel: Option<String>,
     #[serde(default)]
     pub rootfs: Option<String>,
+    #[serde(default)]
+    pub kernel_config: Option<String>,
+    #[serde(default)]
+    pub required_kernel_config: Option<Vec<String>>,
     #[serde(default = "default_clone_rootfs")]
     pub clone_rootfs: bool,
 }
@@ -33,6 +37,8 @@ impl Default for TaskVmConfig {
             boot: TaskVmBoot::Ubuntu,
             kernel: None,
             rootfs: None,
+            kernel_config: None,
+            required_kernel_config: None,
             clone_rootfs: true,
         }
     }
@@ -233,6 +239,11 @@ mod tests {
                     "boot": "custom",
                     "kernel": "../image/bzImage",
                     "rootfs": "../image/rootfs.qcow2",
+                    "kernel_config": "../image/kernel.config",
+                    "required_kernel_config": [
+                        "CONFIG_DM_VERITY=y",
+                        "CONFIG_CRYPTO_SHA256=y"
+                    ],
                     "clone_rootfs": false
                 }
             }"#,
@@ -244,6 +255,14 @@ mod tests {
         assert_eq!(vm.boot, TaskVmBoot::Custom);
         assert_eq!(vm.kernel.as_deref(), Some("../image/bzImage"));
         assert_eq!(vm.rootfs.as_deref(), Some("../image/rootfs.qcow2"));
+        assert_eq!(vm.kernel_config.as_deref(), Some("../image/kernel.config"));
+        assert_eq!(
+            vm.required_kernel_config,
+            Some(vec![
+                "CONFIG_DM_VERITY=y".to_string(),
+                "CONFIG_CRYPTO_SHA256=y".to_string()
+            ])
+        );
         assert!(!vm.clone_rootfs);
     }
 
@@ -301,6 +320,93 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("vm.boot='ubuntu'"));
+    }
+
+    #[test]
+    fn load_task_fails_when_vm_ubuntu_declares_required_kernel_config() {
+        let temp = create_task_dir_with_input(
+            r#"{
+                "commands": [],
+                "vm": {
+                    "boot": "ubuntu",
+                    "required_kernel_config": ["CONFIG_DM_VERITY=y"]
+                }
+            }"#,
+            &[],
+        );
+
+        let result = load_task(temp.path());
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("vm.boot='ubuntu'"));
+        assert!(err.contains("required_kernel_config"));
+    }
+
+    #[test]
+    fn load_task_fails_when_required_kernel_config_missing_kernel_config_path() {
+        let temp = create_task_dir_with_input(
+            r#"{
+                "commands": [],
+                "vm": {
+                    "boot": "custom",
+                    "kernel": "../image/bzImage",
+                    "rootfs": "../image/rootfs.qcow2",
+                    "required_kernel_config": ["CONFIG_DM_VERITY=y"]
+                }
+            }"#,
+            &[],
+        );
+
+        let result = load_task(temp.path());
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("vm.kernel_config"));
+    }
+
+    #[test]
+    fn load_task_fails_when_required_kernel_config_entry_is_invalid() {
+        let temp = create_task_dir_with_input(
+            r#"{
+                "commands": [],
+                "vm": {
+                    "boot": "custom",
+                    "kernel": "../image/bzImage",
+                    "rootfs": "../image/rootfs.qcow2",
+                    "kernel_config": "../image/kernel.config",
+                    "required_kernel_config": ["CONFIG_DM_VERITY=maybe"]
+                }
+            }"#,
+            &[],
+        );
+
+        let result = load_task(temp.path());
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("required_kernel_config"));
+        assert!(err.contains("must be in form"));
+    }
+
+    #[test]
+    fn load_task_fails_when_required_kernel_config_is_empty() {
+        let temp = create_task_dir_with_input(
+            r#"{
+                "commands": [],
+                "vm": {
+                    "boot": "custom",
+                    "kernel": "../image/bzImage",
+                    "rootfs": "../image/rootfs.qcow2",
+                    "kernel_config": "../image/kernel.config",
+                    "required_kernel_config": []
+                }
+            }"#,
+            &[],
+        );
+
+        let result = load_task(temp.path());
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("required_kernel_config"));
+        assert!(err.contains("must not be empty"));
     }
 
     #[test]
@@ -575,9 +681,13 @@ fn validate_artifact_path(value: &str) -> Result<(), String> {
 fn validate_vm_config(vm: &TaskVmConfig) -> Result<(), String> {
     match vm.boot {
         TaskVmBoot::Ubuntu => {
-            if vm.kernel.is_some() || vm.rootfs.is_some() {
+            if vm.kernel.is_some()
+                || vm.rootfs.is_some()
+                || vm.kernel_config.is_some()
+                || vm.required_kernel_config.is_some()
+            {
                 return Err(
-                    "vm.boot='ubuntu' does not allow vm.kernel/vm.rootfs (use vm.boot='custom')"
+                    "vm.boot='ubuntu' does not allow vm.kernel/vm.rootfs/vm.kernel_config/vm.required_kernel_config (use vm.boot='custom')"
                         .to_string(),
                 );
             }
@@ -593,10 +703,59 @@ fn validate_vm_config(vm: &TaskVmConfig) -> Result<(), String> {
                 .ok_or_else(|| "vm.rootfs is required when vm.boot='custom'".to_string())?;
             validate_vm_path(kernel, "vm.kernel")?;
             validate_vm_path(rootfs, "vm.rootfs")?;
+
+            if let Some(kernel_config) = vm.kernel_config.as_deref() {
+                validate_vm_path(kernel_config, "vm.kernel_config")?;
+            }
+
+            if let Some(required) = vm.required_kernel_config.as_ref() {
+                if required.is_empty() {
+                    return Err(
+                        "vm.required_kernel_config must not be empty when provided".to_string()
+                    );
+                }
+                if vm.kernel_config.is_none() {
+                    return Err(
+                        "vm.kernel_config is required when vm.required_kernel_config is set"
+                            .to_string(),
+                    );
+                }
+                for entry in required {
+                    validate_required_kernel_config_entry(entry).map_err(|message| {
+                        format!("vm.required_kernel_config entry '{entry}' invalid: {message}")
+                    })?;
+                }
+            }
         }
     }
 
     Ok(())
+}
+
+fn validate_required_kernel_config_entry(value: &str) -> Result<(), String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err("vm.required_kernel_config entries must not be empty".to_string());
+    }
+
+    let (symbol, expected) = value
+        .split_once('=')
+        .ok_or_else(|| "must be in form CONFIG_FOO=y|m|n".to_string())?;
+
+    if !symbol.starts_with("CONFIG_") || symbol.len() <= "CONFIG_".len() {
+        return Err("must start with CONFIG_ and include a symbol name".to_string());
+    }
+    if !symbol
+        .chars()
+        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+    {
+        return Err("symbol must contain only A-Z, 0-9, and _".to_string());
+    }
+
+    match expected {
+        "y" | "m" | "n" => Ok(()),
+        _ => Err("must be in form CONFIG_FOO=y|m|n".to_string()),
+    }
 }
 
 fn validate_vm_path(value: &str, field: &str) -> Result<(), String> {
