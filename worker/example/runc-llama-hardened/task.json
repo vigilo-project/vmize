@@ -1,7 +1,7 @@
 {
   "name": "runc-llama-hardened",
   "description": "Consume rootfs/config/model artifacts, produce hardened OCI config for UDS-only communication, and prepare capability-minimized runtime settings",
-  "disk_size": "12G",
+  "disk_size": "20G",
   "vm": {
     "boot": "custom",
     "kernel": "../../../image/bzImage",

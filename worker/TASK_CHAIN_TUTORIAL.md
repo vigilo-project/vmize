@@ -8,6 +8,30 @@ The current reference chain is:
 
 `runc-llama-build -> runc-llama-hardened -> runc-llama-verity-pack -> runc-llama-verity-run -> runc-llama-ima-verify-run`
 
+## Prerequisites
+
+Before running the `runc-llama` chain, run the image preparation tasks first:
+
+```bash
+./target/release/vmize task worker/example/rootfs-build
+./target/release/vmize task worker/example/kernel-build
+```
+
+These tasks prepare custom boot files used by the chain:
+- `image/rootfs.qcow2`
+- `image/bzImage`
+
+`kernel-build` applies required config overrides for this chain:
+- `CONFIG_USER_NS`
+- `CONFIG_CGROUP_BPF`
+- `CONFIG_CGROUP_DEVICE`
+- `CONFIG_BLK_DEV_LOOP`
+- `CONFIG_BLK_DEV_DM`
+- `CONFIG_DM_VERITY`
+
+`runc-llama-*` tasks are set to `disk_size: 20G` to avoid resize failures when
+using the handed-off rootfs artifacts.
+
 Use this file as the canonical record for Task Chain behavior, contracts, troubleshooting, and change history.
 
 ## Chain Overview (`build -> hardened -> verity-pack -> verity-run -> ima-verify-run`)

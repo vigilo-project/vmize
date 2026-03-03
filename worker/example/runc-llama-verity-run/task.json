@@ -1,7 +1,7 @@
 {
   "name": "runc-llama-verity-run",
   "description": "Run llama on dm-verity verified squashfs rootfs, then IMA-sign handoff files and package xattr-preserving tar for downstream verified replay",
-  "disk_size": "10G",
+  "disk_size": "20G",
   "vm": {
     "boot": "custom",
     "kernel": "../../../image/bzImage",

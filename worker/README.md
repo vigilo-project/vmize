@@ -51,6 +51,21 @@ cargo build --release
 ./target/release/vmize task worker/example/kernel-build
 ./target/release/vmize task worker/example/rootfs-build
 
+# runc-llama prerequisites (required before running the chain)
+#   1) build rootfs image
+./target/release/vmize task worker/example/rootfs-build
+#   2) build kernel image
+./target/release/vmize task worker/example/kernel-build
+#
+# The runc-llama tasks use custom boot files expected at:
+#   image/rootfs.qcow2 and image/bzImage
+#
+# kernel-build enables required kernel options for this chain, including:
+#   USER_NS, CGROUP_BPF, CGROUP_DEVICE, BLK_DEV_DM, DM_VERITY, BLK_DEV_LOOP
+#
+# runc-llama stage tasks are configured with disk_size=20G to avoid qcow2 resize
+# failures when handing off large rootfs artifacts.
+#
 # runc-llama Task Chain:
 #   step1: runc-llama-build (llama-server with UDS inference)
 #   step2: runc-llama-hardened (hardened config + llama-server UDS)

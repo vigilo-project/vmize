@@ -160,13 +160,18 @@ jq \
         "CAP_SYS_CHROOT"
     ]' \
     '.process.args = ["/bin/sh", "-lc", "sleep infinity"] |
+     .process.user.uid = 0 |
+     .process.user.gid = 0 |
+     .process.user.additionalGids = [] |
      .process.terminal = false |
      .process.noNewPrivileges = false |
      .process.capabilities.bounding = $caps |
      .process.capabilities.effective = $caps |
      .process.capabilities.permitted = $caps |
      .root.readonly = false |
-     .linux.namespaces |= map(select(.type != "network")) |
+     del(.linux.resources, .linux.cgroupsPath) |
+     del(.linux.uidMappings, .linux.gidMappings) |
+     .linux.namespaces |= map(select(.type != "network" and .type != "user")) |
      .mounts = ((.mounts | map(select(.destination != "/models" and .destination != "/sockets"))) + [{
         "destination": "/models",
         "type": "bind",

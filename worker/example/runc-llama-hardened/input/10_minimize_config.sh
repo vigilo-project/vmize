@@ -115,8 +115,12 @@ jq \
      .process.capabilities.bounding = trim_caps($drop) |
      .process.capabilities.effective = trim_caps($drop) |
      .process.capabilities.permitted = trim_caps($drop) |
+     .process.user.uid = 0 |
+     .process.user.gid = 0 |
+     .process.user.additionalGids = [] |
      .root.path = "rootfs" |
      .process.args = ["/bin/sh", "-lc", "sleep infinity"] |
+     del(.linux.resources, .linux.cgroupsPath) |
      .mounts = (
         (.mounts // [])
         | map(select(.destination != "/models" and .destination != "/sockets"))
@@ -177,7 +181,7 @@ echo "[*] Starting hardened runc container: ${CONTAINER_NAME}"
 (
     cd "${BUNDLE_DIR}"
     ${SUDO} runc delete -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
-    ${SUDO} runc run -d "${CONTAINER_NAME}"
+    ${SUDO} runc --rootless=false run -d "${CONTAINER_NAME}"
 )
 
 if ! ${SUDO} runc list | awk 'NR>1 {print $1}' | grep -Fxq "${CONTAINER_NAME}"; then

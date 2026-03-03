@@ -157,8 +157,12 @@ esac
 jq \
     --arg model_source "${MODEL_DIR}" \
     --arg socket_source "${SOCKET_DIR}" \
-    '.root.path = "rootfs" |
+    '.process.user.uid = 0 |
+     .process.user.gid = 0 |
+     .process.user.additionalGids = [] |
+     .root.path = "rootfs" |
      .process.args = ["/bin/sh", "-lc", "sleep infinity"] |
+     del(.linux.resources, .linux.cgroupsPath) |
      .mounts = (
         (.mounts // [])
         | map(select(.destination != "/models" and .destination != "/sockets"))
@@ -179,7 +183,7 @@ jq \
 (
     cd "${BUNDLE_DIR}"
     ${SUDO} runc delete -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
-    ${SUDO} runc run -d "${CONTAINER_NAME}"
+    ${SUDO} runc --rootless=false run -d "${CONTAINER_NAME}"
 )
 CONTAINER_STARTED=1
 

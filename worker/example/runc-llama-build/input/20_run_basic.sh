@@ -79,7 +79,7 @@ echo "[*] Starting OCI container"
 (
     cd "${BUNDLE_DIR}"
     ${SUDO} runc delete -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
-    ${SUDO} runc run -d "${CONTAINER_NAME}"
+    ${SUDO} runc --rootless=false run -d "${CONTAINER_NAME}"
 )
 
 if ${SUDO} runc list | awk 'NR>1 {print $1}' | grep -Fxq "${CONTAINER_NAME}"; then

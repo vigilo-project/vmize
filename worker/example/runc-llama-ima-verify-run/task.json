@@ -1,7 +1,7 @@
 {
   "name": "runc-llama-ima-verify-run",
   "description": "Verify IMA-signed runtime tar with cert.der, then run llama on dm-verity rootfs and validate UDS inference",
-  "disk_size": "8G",
+  "disk_size": "20G",
   "vm": {
     "boot": "custom",
     "kernel": "../../../image/bzImage",

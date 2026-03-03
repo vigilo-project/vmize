@@ -120,6 +120,19 @@ build_kernel() {
 
   echo "[+] Applying kernel config overrides for VM direct boot + cloud-init seed"
   "${config_script}" --file "${KERNEL_DIR}/.config" \
+    --enable BPF \
+    --enable BPF_SYSCALL \
+    --enable BPF_JIT \
+    --enable NAMESPACES \
+    --enable USER_NS \
+    --enable CGROUPS \
+    --enable CGROUP_BPF \
+    --enable CGROUP_DEVICE \
+    --enable BLK_DEV \
+    --enable BLK_DEV_LOOP \
+    --enable MD \
+    --enable BLK_DEV_DM \
+    --enable DM_VERITY \
     --enable DEVTMPFS \
     --enable DEVTMPFS_MOUNT \
     --enable EXT4_FS \
