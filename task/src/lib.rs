@@ -15,6 +15,23 @@ fn default_clone_rootfs() -> bool {
     true
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
+pub enum TaskVmMountMode {
+    #[default]
+    #[serde(rename = "ro")]
+    ReadOnly,
+    #[serde(rename = "rw")]
+    ReadWrite,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct TaskVmMount {
+    pub host: String,
+    pub guest: String,
+    #[serde(default)]
+    pub mode: TaskVmMountMode,
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct TaskVmConfig {
     #[serde(default)]
@@ -27,6 +44,8 @@ pub struct TaskVmConfig {
     pub kernel_config: Option<String>,
     #[serde(default)]
     pub required_kernel_config: Option<Vec<String>>,
+    #[serde(default)]
+    pub mounts: Vec<TaskVmMount>,
     #[serde(default = "default_clone_rootfs")]
     pub clone_rootfs: bool,
 }
@@ -39,6 +58,7 @@ impl Default for TaskVmConfig {
             rootfs: None,
             kernel_config: None,
             required_kernel_config: None,
+            mounts: Vec::new(),
             clone_rootfs: true,
         }
     }
@@ -244,6 +264,10 @@ mod tests {
                         "CONFIG_DM_VERITY=y",
                         "CONFIG_CRYPTO_SHA256=y"
                     ],
+                    "mounts": [
+                        {"host": "../vigilo", "guest": "/mnt/vigilo"},
+                        {"host": "/tmp", "guest": "/mnt/tmp", "mode": "rw"}
+                    ],
                     "clone_rootfs": false
                 }
             }"#,
@@ -263,6 +287,11 @@ mod tests {
                 "CONFIG_CRYPTO_SHA256=y".to_string()
             ])
         );
+        assert_eq!(vm.mounts.len(), 2);
+        assert_eq!(vm.mounts[0].host, "../vigilo");
+        assert_eq!(vm.mounts[0].guest, "/mnt/vigilo");
+        assert_eq!(vm.mounts[0].mode, TaskVmMountMode::ReadOnly);
+        assert_eq!(vm.mounts[1].mode, TaskVmMountMode::ReadWrite);
         assert!(!vm.clone_rootfs);
     }
 
@@ -428,6 +457,25 @@ mod tests {
         let err = result.unwrap_err();
         assert!(err.contains("vm.kernel"));
         assert!(err.contains("must not include '.'"));
+    }
+
+    #[test]
+    fn load_task_fails_when_vm_mount_guest_is_not_absolute() {
+        let temp = create_task_dir_with_input(
+            r#"{
+                "commands": [],
+                "vm": {
+                    "mounts": [{"host": "../vigilo", "guest": "mnt/vigilo"}]
+                }
+            }"#,
+            &[],
+        );
+
+        let result = load_task(temp.path());
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("vm.mounts[0].guest"));
+        assert!(err.contains("absolute path"));
     }
 
     #[test]
@@ -679,6 +727,10 @@ fn validate_artifact_path(value: &str) -> Result<(), String> {
 }
 
 fn validate_vm_config(vm: &TaskVmConfig) -> Result<(), String> {
+    for (index, mount) in vm.mounts.iter().enumerate() {
+        validate_vm_mount(mount, index)?;
+    }
+
     match vm.boot {
         TaskVmBoot::Ubuntu => {
             if vm.kernel.is_some()
@@ -727,6 +779,40 @@ fn validate_vm_config(vm: &TaskVmConfig) -> Result<(), String> {
                 }
             }
         }
+    }
+
+    Ok(())
+}
+
+fn validate_vm_mount(mount: &TaskVmMount, index: usize) -> Result<(), String> {
+    if mount.host.trim().is_empty() {
+        return Err(format!("vm.mounts[{index}].host must not be empty"));
+    }
+    if mount.guest.trim().is_empty() {
+        return Err(format!("vm.mounts[{index}].guest must not be empty"));
+    }
+
+    let host = Path::new(&mount.host);
+    if host
+        .components()
+        .any(|component| matches!(component, Component::CurDir))
+    {
+        return Err(format!(
+            "vm.mounts[{index}].host must not include '.' path components"
+        ));
+    }
+
+    let guest = Path::new(&mount.guest);
+    if !guest.is_absolute() {
+        return Err(format!("vm.mounts[{index}].guest must be an absolute path"));
+    }
+    if guest
+        .components()
+        .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
+    {
+        return Err(format!(
+            "vm.mounts[{index}].guest must not include '.' or '..' path components"
+        ));
     }
 
     Ok(())

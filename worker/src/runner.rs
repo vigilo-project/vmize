@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use crate::vm_ops::{VmOps, VmOptions};
 use crate::{ChainRunResult, ChainStepResult, Error, RunResult};
-use task::{LoadedTask, TaskVmBoot, load_task};
+use task::{LoadedTask, TaskVmBoot, TaskVmMountMode, load_task};
 
 const VM_WORK_DIR: &str = "/tmp/vmize-worker/work";
 const VM_OUTPUT_DIR: &str = "/tmp/vmize-worker/out";
@@ -338,6 +338,7 @@ fn prepare_vm_launch_options(
         .clone()
         .or_else(|| task.definition.disk_size.clone());
     let vm_config = task.definition.vm.clone().unwrap_or_default();
+    let resolved_mounts = resolve_vm_mounts(task, &vm_config)?;
 
     match vm_config.boot {
         TaskVmBoot::Ubuntu => Ok(VmLaunchOptions {
@@ -345,6 +346,7 @@ fn prepare_vm_launch_options(
                 disk_size: effective_disk_size,
                 kernel: None,
                 rootfs: None,
+                mounts: resolved_mounts,
                 show_progress: options.show_progress,
             },
             temporary_rootfs_path: None,
@@ -388,12 +390,73 @@ fn prepare_vm_launch_options(
                     disk_size: None,
                     kernel: Some(kernel),
                     rootfs: Some(runtime_rootfs),
+                    mounts: resolved_mounts,
                     show_progress: options.show_progress,
                 },
                 temporary_rootfs_path,
             })
         }
     }
+}
+
+fn resolve_vm_mounts(task: &LoadedTask, vm_config: &task::TaskVmConfig) -> Result<Vec<vm::MountSpec>, Error> {
+    if vm_config.mounts.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let task_dir = task.output_dir.parent().ok_or_else(|| Error::Runtime {
+        message: "Failed to resolve task directory for vm.mounts".to_string(),
+    })?;
+
+    let mut mounts = Vec::with_capacity(vm_config.mounts.len());
+    for (index, mount) in vm_config.mounts.iter().enumerate() {
+        let host_path = {
+            let configured = Path::new(&mount.host);
+            if configured.is_absolute() {
+                configured.to_path_buf()
+            } else {
+                task_dir.join(configured)
+            }
+        };
+        if !host_path.exists() {
+            return Err(Error::Runtime {
+                message: format!(
+                    "vm.mounts[{index}].host path does not exist: {}",
+                    host_path.display()
+                ),
+            });
+        }
+        if !host_path.is_dir() {
+            return Err(Error::Runtime {
+                message: format!(
+                    "vm.mounts[{index}].host path is not a directory: {}",
+                    host_path.display()
+                ),
+            });
+        }
+
+        let guest_path = PathBuf::from(&mount.guest);
+        if !guest_path.is_absolute() {
+            return Err(Error::Runtime {
+                message: format!(
+                    "vm.mounts[{index}].guest path is not absolute: {}",
+                    mount.guest
+                ),
+            });
+        }
+
+        let mode = match mount.mode {
+            TaskVmMountMode::ReadOnly => vm::MountMode::ReadOnly,
+            TaskVmMountMode::ReadWrite => vm::MountMode::ReadWrite,
+        };
+        mounts.push(vm::MountSpec {
+            host_path,
+            guest_path,
+            mode,
+        });
+    }
+
+    Ok(mounts)
 }
 
 fn resolve_vm_config_path(task: &LoadedTask, field: &str, value: &str) -> Result<PathBuf, Error> {
@@ -1908,6 +1971,7 @@ mod tests {
             rootfs: Some("rootfs.qcow2".to_string()),
             kernel_config: None,
             required_kernel_config: None,
+            mounts: vec![],
             clone_rootfs: false,
         });
 
@@ -1934,6 +1998,89 @@ mod tests {
     }
 
     #[test]
+    fn run_loaded_task_with_ops_passes_vm_mounts_to_run_options() {
+        let (temp, mut task) = create_test_loaded_task(&["00_first.sh"]);
+        let host_mount_dir = temp.path().join("vigilo");
+        fs::create_dir_all(&host_mount_dir).unwrap();
+        task.definition.vm = Some(task::TaskVmConfig {
+            boot: TaskVmBoot::Ubuntu,
+            kernel: None,
+            rootfs: None,
+            kernel_config: None,
+            required_kernel_config: None,
+            mounts: vec![task::TaskVmMount {
+                host: "vigilo".to_string(),
+                guest: "/mnt/vigilo".to_string(),
+                mode: task::TaskVmMountMode::ReadOnly,
+            }],
+            clone_rootfs: true,
+        });
+
+        let mock = MockVmOps::new()
+            .with_run_ok("test-vm")
+            .with_ssh_ok("")
+            .with_stream_outputs(vec!["output"]);
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _ = rt
+            .block_on(run_loaded_task_with_ops(
+                &mock,
+                &task,
+                TaskRunOptions::default(),
+                None,
+            ))
+            .unwrap();
+
+        let run_calls = mock.run_calls();
+        assert_eq!(run_calls.len(), 1);
+        assert_eq!(run_calls[0].mounts.len(), 1);
+        assert_eq!(run_calls[0].mounts[0].host_path, host_mount_dir);
+        assert_eq!(
+            run_calls[0].mounts[0].guest_path,
+            PathBuf::from("/mnt/vigilo")
+        );
+    }
+
+    #[test]
+    fn run_loaded_task_with_ops_fails_when_vm_mount_host_missing() {
+        let (_temp, mut task) = create_test_loaded_task(&["00_first.sh"]);
+        task.definition.vm = Some(task::TaskVmConfig {
+            boot: TaskVmBoot::Ubuntu,
+            kernel: None,
+            rootfs: None,
+            kernel_config: None,
+            required_kernel_config: None,
+            mounts: vec![task::TaskVmMount {
+                host: "missing-dir".to_string(),
+                guest: "/mnt/vigilo".to_string(),
+                mode: task::TaskVmMountMode::ReadOnly,
+            }],
+            clone_rootfs: true,
+        });
+
+        let mock = MockVmOps::new().with_run_ok("test-vm");
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let err = rt
+            .block_on(run_loaded_task_with_ops(
+                &mock,
+                &task,
+                TaskRunOptions::default(),
+                None,
+            ))
+            .unwrap_err();
+
+        match err {
+            Error::Runtime { message } => {
+                assert!(message.contains("vm.mounts[0].host"));
+                assert!(message.contains("does not exist"));
+            }
+            other => panic!("Expected Runtime error, got: {other}"),
+        }
+        assert!(mock.run_calls().is_empty());
+    }
+
+    #[test]
     fn run_loaded_task_with_ops_clones_custom_rootfs_when_enabled() {
         let (temp, mut task) = create_test_loaded_task(&["00_first.sh"]);
         let kernel_path = temp.path().join("bzImage");
@@ -1946,6 +2093,7 @@ mod tests {
             rootfs: Some("rootfs.qcow2".to_string()),
             kernel_config: None,
             required_kernel_config: None,
+            mounts: vec![],
             clone_rootfs: true,
         });
 
@@ -1988,6 +2136,7 @@ mod tests {
             rootfs: Some("rootfs.qcow2".to_string()),
             kernel_config: None,
             required_kernel_config: None,
+            mounts: vec![],
             clone_rootfs: true,
         });
 
@@ -2026,6 +2175,7 @@ mod tests {
             rootfs: Some("rootfs.qcow2".to_string()),
             kernel_config: None,
             required_kernel_config: None,
+            mounts: vec![],
             clone_rootfs: false,
         });
 
@@ -2067,6 +2217,7 @@ mod tests {
             rootfs: Some("rootfs.qcow2".to_string()),
             kernel_config: Some("kernel.config".to_string()),
             required_kernel_config: Some(vec!["CONFIG_DM_VERITY=y".to_string()]),
+            mounts: vec![],
             clone_rootfs: false,
         });
 
@@ -2108,6 +2259,7 @@ mod tests {
             rootfs: Some("rootfs.qcow2".to_string()),
             kernel_config: Some("kernel.config".to_string()),
             required_kernel_config: Some(vec!["CONFIG_DM_VERITY=y".to_string()]),
+            mounts: vec![],
             clone_rootfs: false,
         });
 

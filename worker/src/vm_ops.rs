@@ -18,6 +18,7 @@ pub struct VmOptions {
     pub disk_size: Option<String>,
     pub kernel: Option<PathBuf>,
     pub rootfs: Option<PathBuf>,
+    pub mounts: Vec<vm::MountSpec>,
     pub show_progress: bool,
 }
 
@@ -60,6 +61,7 @@ impl VmOps for RealVmOps {
             disk_size: options.disk_size,
             kernel: options.kernel,
             rootfs: options.rootfs,
+            mounts: options.mounts,
             show_progress: options.show_progress,
             on_progress: None,
             ..Default::default()
