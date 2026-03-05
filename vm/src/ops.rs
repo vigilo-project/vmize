@@ -1,7 +1,7 @@
 use crate::cloud_init::{CloudInitSeed, IsoCreator};
 use crate::config::Config;
 use crate::image::{ImageDownloader, copy_disk_image, detect_disk_format};
-use crate::mount::MountSpec;
+use crate::mount::{MountMode, MountSpec};
 use crate::platform::HostProfile;
 use crate::process::is_process_alive;
 use crate::progress::{StepProgress, sp_complete, sp_fail, sp_start};
@@ -75,6 +75,37 @@ struct VirtioFsShareRuntime {
 #[derive(Debug, Default, Clone)]
 struct VirtioFsRuntime {
     shares: Vec<VirtioFsShareRuntime>,
+}
+
+fn virtiofs_tag_for_index(index: usize) -> String {
+    format!("vmizefs{index}")
+}
+
+fn shell_quote(value: &str) -> String {
+    if value.is_empty() {
+        return "''".to_string();
+    }
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+fn mount_runcmd_for_spec(index: usize, mount: &MountSpec) -> Vec<String> {
+    let tag = virtiofs_tag_for_index(index);
+    let guest_path = mount.guest_path.to_string_lossy().to_string();
+    let quoted_guest = shell_quote(&guest_path);
+    let mount_cmd = match mount.mode {
+        MountMode::ReadOnly => format!(
+            "mount -t virtiofs -o ro {} {}",
+            shell_quote(&tag),
+            quoted_guest
+        ),
+        MountMode::ReadWrite => format!(
+            "mount -t virtiofs {} {}",
+            shell_quote(&tag),
+            quoted_guest
+        ),
+    };
+
+    vec![format!("mkdir -p {}", quoted_guest), mount_cmd]
 }
 
 impl VirtioFsRuntime {
@@ -162,7 +193,7 @@ fn start_virtiofs_runtime(vm_dir: &Path, mounts: &[MountSpec]) -> Result<VirtioF
     let mut started_pids = Vec::with_capacity(mounts.len());
 
     for (index, mount) in mounts.iter().enumerate() {
-        let tag = format!("vmizefs{index}");
+        let tag = virtiofs_tag_for_index(index);
         let socket_path = vm_dir.join(format!("virtiofs-{index}.sock"));
         let _ = fs::remove_file(&socket_path);
 
@@ -714,7 +745,15 @@ async fn run_vm_inner(config: &Config, options: RunOptions) -> Result<VmRecord> 
     sp_start(&mut sp, "Cloud-init seed");
     notify_progress(&on_progress, 5, 8, "Cloud-init seed");
     info!("Creating cloud-init seed...");
-    let seed = CloudInitSeed::with_config(hostname.clone(), username.clone(), public_key);
+    let mut seed = CloudInitSeed::with_config(hostname.clone(), username.clone(), public_key);
+    if !mounts.is_empty() {
+        let mount_commands: Vec<String> = mounts
+            .iter()
+            .enumerate()
+            .flat_map(|(index, mount)| mount_runcmd_for_spec(index, mount))
+            .collect();
+        seed.extend_runcmd(mount_commands);
+    }
 
     let metadata_path = vm_dir.join("meta-data");
     let userdata_path = vm_dir.join("user-data");

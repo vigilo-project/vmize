@@ -128,6 +128,14 @@ impl CloudInitSeed {
         }
     }
 
+    /// Append one or more first-boot commands to cloud-init `runcmd`.
+    pub fn extend_runcmd<I>(&mut self, commands: I)
+    where
+        I: IntoIterator<Item = String>,
+    {
+        self.userdata.runcmd.extend(commands);
+    }
+
     /// Get metadata content
     #[cfg(test)]
     pub fn metadata(&self) -> &Metadata {
@@ -254,5 +262,22 @@ mod tests {
 
         let userdata_content = std::fs::read_to_string(&userdata_path).unwrap();
         assert!(userdata_content.contains("#cloud-config"));
+    }
+
+    #[test]
+    fn test_cloud_init_seed_extend_runcmd_appends_commands() {
+        let mut seed = CloudInitSeed::with_config(
+            "test-vm".to_string(),
+            "testuser".to_string(),
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA test".to_string(),
+        );
+        seed.extend_runcmd([
+            "mkdir -p /mnt/vigilo".to_string(),
+            "mount -t virtiofs vmizefs0 /mnt/vigilo -o ro".to_string(),
+        ]);
+
+        let yaml = seed.userdata_string().unwrap();
+        assert!(yaml.contains("mkdir -p /mnt/vigilo"));
+        assert!(yaml.contains("mount -t virtiofs vmizefs0 /mnt/vigilo -o ro"));
     }
 }
