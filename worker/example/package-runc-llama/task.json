@@ -14,5 +14,6 @@
     "rootfs.root_hash",
     "config.json",
     "model.gguf"
-  ]
+  ],
+  "next_task_dir": "../package-manager"
 }
