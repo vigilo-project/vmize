@@ -26,6 +26,8 @@ pub struct VmRecord {
     pub disk_path: String,
     pub seed_iso_path: String,
     pub pid: Option<u32>,
+    #[serde(default)]
+    pub sidecar_pids: Vec<u32>,
     pub status: VmStatus,
     pub created_at: u64,
     pub host_profile: String,
@@ -172,6 +174,12 @@ pub fn remove_path_if_exists(path: &Path) -> Result<()> {
 fn read_pid_file(path: &Path) -> Option<u32> {
     let pid_text = std::fs::read_to_string(path).ok()?;
     pid_text.trim().parse::<u32>().ok()
+}
+
+fn stop_sidecar_process(pid: u32) {
+    let _ = Command::new("kill")
+        .args(["-TERM", &pid.to_string()])
+        .output();
 }
 
 fn scan_qemu_processes() -> Vec<(u32, String)> {
@@ -367,6 +375,11 @@ pub fn stop_record_if_running(id: &str, record: &mut VmRecord, instances_dir: &P
         }
     }
 
+    for pid in &record.sidecar_pids {
+        stop_sidecar_process(*pid);
+    }
+    record.sidecar_pids.clear();
+
     record.pid = None;
     record.status = VmStatus::Stopped;
     write_vm_record(instances_dir, record)?;
@@ -393,6 +406,7 @@ mod tests {
             disk_path: "/tmp/disk.qcow2".to_string(),
             seed_iso_path: "/tmp/seed.iso".to_string(),
             pid: None,
+            sidecar_pids: Vec::new(),
             status: VmStatus::Running,
             created_at: 0,
             host_profile: "linux/amd64".to_string(),

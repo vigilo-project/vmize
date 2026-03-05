@@ -35,8 +35,15 @@ pub struct QemuConfig {
     pid_file: Option<PathBuf>,
     qemu_name: Option<String>,
     ssh_port: Option<u16>,
+    virtiofs_shares: Vec<VirtioFsShare>,
     display: bool,
     daemonize: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VirtioFsShare {
+    tag: String,
+    socket_path: PathBuf,
 }
 
 impl Default for QemuConfig {
@@ -69,6 +76,7 @@ impl Default for QemuConfig {
             pid_file: None,
             qemu_name: None,
             ssh_port: None,
+            virtiofs_shares: Vec::new(),
             display: false,
             daemonize: true,
         }
@@ -174,6 +182,19 @@ impl QemuConfig {
         self
     }
 
+    /// Add a virtiofs share backed by a vhost-user socket.
+    pub fn virtiofs_share<P: AsRef<Path>>(
+        mut self,
+        tag: impl Into<String>,
+        socket_path: P,
+    ) -> Self {
+        self.virtiofs_shares.push(VirtioFsShare {
+            tag: tag.into(),
+            socket_path: socket_path.as_ref().to_path_buf(),
+        });
+        self
+    }
+
     /// Return the configured pidfile path, if set.
     pub fn pid_file_path(&self) -> Option<&Path> {
         self.pid_file.as_deref()
@@ -244,6 +265,19 @@ impl QemuConfig {
             cmd.arg("-device").arg("virtio-net-pci,netdev=net0");
         }
 
+        for (index, share) in self.virtiofs_shares.iter().enumerate() {
+            let chardev_id = format!("virtiofsch{index}");
+            cmd.arg("-chardev").arg(format!(
+                "socket,id={},path={}",
+                chardev_id,
+                share.socket_path.display()
+            ));
+            cmd.arg("-device").arg(format!(
+                "vhost-user-fs-pci,chardev={},tag={}",
+                chardev_id, share.tag
+            ));
+        }
+
         // Configure display
         if self.display {
             cmd.arg("-display").arg("gtk");
@@ -305,6 +339,24 @@ impl QemuConfig {
             bail!("Kernel image does not exist: {}", kernel.display());
         }
 
+        for share in &self.virtiofs_shares {
+            if share.tag.trim().is_empty() {
+                bail!("virtiofs tag must not be empty");
+            }
+            if !share.socket_path.is_absolute() {
+                bail!(
+                    "virtiofs socket path must be absolute: {}",
+                    share.socket_path.display()
+                );
+            }
+            if !share.socket_path.exists() {
+                bail!(
+                    "virtiofs socket does not exist: {}",
+                    share.socket_path.display()
+                );
+            }
+        }
+
         Ok(())
     }
 }
@@ -314,6 +366,7 @@ mod tests {
     use super::*;
     use crate::platform::HostProfile;
     use tempfile::NamedTempFile;
+    use tempfile::TempDir;
 
     #[test]
     fn test_qemu_config_default() {
@@ -552,5 +605,30 @@ mod tests {
         assert!(!args.contains(&"-daemonize".to_string()));
         assert!(args.contains(&"-serial".to_string()));
         assert!(args.contains(&"stdio".to_string()));
+    }
+
+    #[test]
+    fn test_qemu_config_build_args_with_virtiofs_share() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let temp_file2 = NamedTempFile::new().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let socket_path = temp_dir.path().join("virtiofs.sock");
+
+        let config = QemuConfig::new()
+            .disk_image(temp_file.path())
+            .cloud_init_iso(temp_file2.path())
+            .virtiofs_share("vmizefs0", &socket_path);
+
+        let args = config.build_args().unwrap();
+        assert!(args.iter().any(|arg| {
+            arg == "-chardev"
+                || arg.contains(&format!(
+                    "socket,id=virtiofsch0,path={}",
+                    socket_path.display()
+                ))
+        }));
+        assert!(args.iter().any(|arg| {
+            arg == "-device" || arg.contains("vhost-user-fs-pci,chardev=virtiofsch0,tag=vmizefs0")
+        }));
     }
 }

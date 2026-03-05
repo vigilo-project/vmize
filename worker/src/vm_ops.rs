@@ -174,6 +174,7 @@ pub mod mock {
             disk_path: "/tmp/disk.qcow2".to_string(),
             seed_iso_path: "/tmp/seed.iso".to_string(),
             pid: Some(12345),
+            sidecar_pids: Vec::new(),
             status: vm::VmStatus::Running,
             created_at: 0,
             host_profile: "test".to_string(),

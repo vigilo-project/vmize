@@ -14,8 +14,10 @@ use crate::vm::{
     ssh_port_locks_dir, stop_qemu_and_wait, validate_vm_capacity, write_vm_record,
 };
 use anyhow::{Context, Result, bail};
+use std::env;
+use std::fs;
 use std::io::ErrorKind;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpStream;
@@ -61,6 +63,147 @@ impl Default for RunOptions {
             on_progress: None,
         }
     }
+}
+
+#[derive(Debug, Clone)]
+struct VirtioFsShareRuntime {
+    tag: String,
+    socket_path: PathBuf,
+    pid: u32,
+}
+
+#[derive(Debug, Default, Clone)]
+struct VirtioFsRuntime {
+    shares: Vec<VirtioFsShareRuntime>,
+}
+
+impl VirtioFsRuntime {
+    fn pids(&self) -> Vec<u32> {
+        self.shares.iter().map(|share| share.pid).collect()
+    }
+}
+
+fn find_executable(name: &str) -> Option<PathBuf> {
+    let path_var = env::var_os("PATH")?;
+    for dir in env::split_paths(&path_var) {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn resolve_virtiofsd_binary() -> Option<PathBuf> {
+    find_executable("virtiofsd")
+        .or_else(|| find_executable("qemu-virtiofsd"))
+        .or_else(|| {
+            let homebrew = PathBuf::from("/opt/homebrew/libexec/virtiofsd");
+            homebrew.is_file().then_some(homebrew)
+        })
+}
+
+fn wait_for_socket_or_exit(pid: u32, socket_path: &Path, timeout: Duration) -> Result<()> {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if socket_path.exists() {
+            return Ok(());
+        }
+        if !is_process_alive(pid) {
+            bail!(
+                "virtiofsd process {} exited before creating socket {}",
+                pid,
+                socket_path.display()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    bail!(
+        "Timed out waiting for virtiofs socket {}",
+        socket_path.display()
+    )
+}
+
+fn stop_sidecar_processes(pids: &[u32]) {
+    for pid in pids {
+        let _ = Command::new("kill")
+            .arg("-TERM")
+            .arg(pid.to_string())
+            .output();
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        if pids.iter().all(|pid| !is_process_alive(*pid)) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    for pid in pids {
+        if is_process_alive(*pid) {
+            let _ = Command::new("kill")
+                .arg("-KILL")
+                .arg(pid.to_string())
+                .output();
+        }
+    }
+}
+
+fn start_virtiofs_runtime(vm_dir: &Path, mounts: &[MountSpec]) -> Result<VirtioFsRuntime> {
+    if mounts.is_empty() {
+        return Ok(VirtioFsRuntime::default());
+    }
+
+    let virtiofsd = resolve_virtiofsd_binary()
+        .context("virtiofsd not found (expected 'virtiofsd' or 'qemu-virtiofsd' in PATH)")?;
+    let mut shares = Vec::with_capacity(mounts.len());
+    let mut started_pids = Vec::with_capacity(mounts.len());
+
+    for (index, mount) in mounts.iter().enumerate() {
+        let tag = format!("vmizefs{index}");
+        let socket_path = vm_dir.join(format!("virtiofs-{index}.sock"));
+        let _ = fs::remove_file(&socket_path);
+
+        let child = Command::new(&virtiofsd)
+            .arg("--socket-path")
+            .arg(&socket_path)
+            .arg("--shared-dir")
+            .arg(&mount.host_path)
+            .arg("--sandbox")
+            .arg("none")
+            .arg("--cache")
+            .arg("auto")
+            .arg("--inode-file-handles")
+            .arg("never")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .with_context(|| {
+                format!(
+                    "Failed to start virtiofsd for host path {}",
+                    mount.host_path.display()
+                )
+            })?;
+        let pid = child.id();
+        drop(child);
+
+        if let Err(err) = wait_for_socket_or_exit(pid, &socket_path, Duration::from_secs(5)) {
+            stop_sidecar_processes(&started_pids);
+            return Err(err);
+        }
+
+        started_pids.push(pid);
+        shares.push(VirtioFsShareRuntime {
+            tag,
+            socket_path,
+            pid,
+        });
+    }
+
+    Ok(VirtioFsRuntime { shares })
 }
 
 pub async fn run(options: RunOptions) -> Result<VmRecord> {
@@ -417,6 +560,7 @@ async fn run_vm_inner(config: &Config, options: RunOptions) -> Result<VmRecord> 
     let force_download = options.force_download;
     let kernel = options.kernel;
     let rootfs = options.rootfs;
+    let mounts = options.mounts;
     let verbose = options.verbose;
     let show_progress = options.show_progress;
     let on_progress = options.on_progress;
@@ -606,6 +750,20 @@ async fn run_vm_inner(config: &Config, options: RunOptions) -> Result<VmRecord> 
     notify_progress(&on_progress, 7, 8, "Starting QEMU");
     info!("Building QEMU configuration...");
 
+    let virtiofs_runtime = match start_virtiofs_runtime(&vm_dir, &mounts) {
+        Ok(runtime) => runtime,
+        Err(err) => {
+            if let Err(remove_err) = fs::remove_dir_all(&vm_dir) {
+                info!(
+                    "Failed to remove VM directory after virtiofs setup error {}: {}",
+                    vm_dir.display(),
+                    remove_err
+                );
+            }
+            return Err(err);
+        }
+    };
+
     // Custom kernel boot: direct-boot with kernel+rootfs, no EFI BIOS.
     // Standard boot: use the host profile's BIOS path (if any).
     let bios_path = if use_custom_kernel {
@@ -640,12 +798,17 @@ async fn run_vm_inner(config: &Config, options: RunOptions) -> Result<VmRecord> 
         qemu_config = qemu_config.kernel_path(kernel_path).append(kernel_append);
     }
 
+    for share in &virtiofs_runtime.shares {
+        qemu_config = qemu_config.virtiofs_share(&share.tag, &share.socket_path);
+    }
+
     info!("Starting QEMU VM...");
     let mut runner = QemuRunner::new();
     let pid = match runner.start(&qemu_config) {
         Ok(pid) => pid,
         Err(err) => {
             sp_fail(&mut sp, &err.to_string());
+            stop_sidecar_processes(&virtiofs_runtime.pids());
             return Err(err);
         }
     };
@@ -660,6 +823,7 @@ async fn run_vm_inner(config: &Config, options: RunOptions) -> Result<VmRecord> 
         disk_path: vm_disk_path.to_string_lossy().to_string(),
         seed_iso_path: iso_path.to_string_lossy().to_string(),
         pid: Some(pid),
+        sidecar_pids: virtiofs_runtime.pids(),
         status: VmStatus::Running,
         created_at: SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -677,6 +841,7 @@ async fn run_vm_inner(config: &Config, options: RunOptions) -> Result<VmRecord> 
         if let Err(err) = stop_qemu_and_wait(pid, Duration::from_secs(3)) {
             info!("Unable to stop failed VM on pid {}: {}", pid, err);
         }
+        stop_sidecar_processes(&vm_record.sidecar_pids);
         if let Err(err) = std::fs::remove_dir_all(&vm_dir) {
             info!(
                 "Failed to remove failed VM directory {}: {}",
@@ -722,6 +887,7 @@ async fn run_vm_inner(config: &Config, options: RunOptions) -> Result<VmRecord> 
         {
             info!("Failed to stop QEMU pid {}: {}", pid, e);
         }
+        stop_sidecar_processes(&vm_record.sidecar_pids);
         let vm_dir = instances_dir.join(&vm_record.id);
         if let Err(e) = std::fs::remove_dir_all(&vm_dir) {
             info!("Failed to remove VM directory {}: {}", vm_dir.display(), e);
