@@ -2,12 +2,14 @@ use anyhow::Result;
 
 use crate::config::Config;
 
+pub use crate::mount::{MountMode, MountSpec, parse_mount_spec};
 pub use crate::ops::{ProgressCallback, RunOptions};
 pub use crate::vm::{VmRecord, VmStatus};
 
 pub(crate) mod cloud_init;
 pub(crate) mod config;
 pub(crate) mod image;
+pub mod mount;
 pub(crate) mod ops;
 pub(crate) mod platform;
 pub(crate) mod process;
