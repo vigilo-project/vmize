@@ -23,7 +23,7 @@ if [[ ! -f "${SRC_TAR}" ]]; then
     echo "    tar -C /path/to/package-manager \\"
     echo "        --exclude=target --exclude=.git --exclude=node_modules \\"
     echo "        -cf worker/example/package-manager/input/package-manager-src.tar \\"
-    echo "        Cargo.toml Cargo.lock format builder loader"
+    echo "        Cargo.toml Cargo.lock format loader"
     exit 1
 fi
 

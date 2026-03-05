@@ -47,8 +47,8 @@ tar cf "${VMIZE_TAR}" \
 
 ls -lh "${VMIZE_TAR}"
 
-echo "[*] Running loader run-vmize"
-${SUDO} loader run-vmize "${CONTAINER_NAME}" --pkg "${VMIZE_TAR}" --detach
+echo "[*] Running loader run"
+${SUDO} loader run "${CONTAINER_NAME}" --pkg "${VMIZE_TAR}" --detach
 CONTAINER_STARTED=1
 
 # Detect architecture for LD_LIBRARY_PATH
