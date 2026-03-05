@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use vm::{RunOptions, cp, ps, rm, run, ssh, ssh_stream};
+use vm::{MountSpec, RunOptions, cp, ps, rm, run, ssh, ssh_stream};
 
 /// VM CLI - Ubuntu Cloud Image VM Automation
 #[derive(Parser, Debug)]
@@ -53,6 +53,10 @@ enum Commands {
         /// Show QEMU verbose output
         #[arg(long, default_value = "false")]
         verbose: bool,
+
+        /// Mount host path into VM: <host_path>:<guest_path>[:ro|rw]
+        #[arg(long = "mount", value_parser = parse_mount_spec_arg)]
+        mounts: Vec<MountSpec>,
     },
 
     /// Connect to a VM by ID
@@ -124,6 +128,7 @@ async fn main() -> Result<()> {
             kernel,
             rootfs,
             verbose,
+            mounts,
         } => {
             let options = RunOptions {
                 username: Some(username),
@@ -135,6 +140,7 @@ async fn main() -> Result<()> {
                 kernel,
                 rootfs,
                 verbose,
+                mounts,
                 ..Default::default()
             };
             let record = run(options).await?;
@@ -186,4 +192,46 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn parse_mount_spec_arg(value: &str) -> std::result::Result<MountSpec, String> {
+    vm::parse_mount_spec(value).map_err(|err| err.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cli_parses_single_mount_argument() {
+        let cli = Cli::parse_from(["vm", "run", "--mount", "/tmp:/mnt/host"]);
+        match cli.command {
+            Commands::Run { mounts, .. } => {
+                assert_eq!(mounts.len(), 1);
+                assert_eq!(mounts[0].host_path.to_string_lossy(), "/tmp");
+                assert_eq!(mounts[0].guest_path.to_string_lossy(), "/mnt/host");
+            }
+            _ => panic!("expected run command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_multiple_mount_arguments() {
+        let cli = Cli::parse_from([
+            "vm",
+            "run",
+            "--mount",
+            "/tmp:/mnt/one",
+            "--mount",
+            "/var/tmp:/mnt/two:rw",
+        ]);
+        match cli.command {
+            Commands::Run { mounts, .. } => {
+                assert_eq!(mounts.len(), 2);
+                assert_eq!(mounts[0].guest_path.to_string_lossy(), "/mnt/one");
+                assert_eq!(mounts[1].guest_path.to_string_lossy(), "/mnt/two");
+            }
+            _ => panic!("expected run command"),
+        }
+    }
 }

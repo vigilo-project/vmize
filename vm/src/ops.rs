@@ -1,6 +1,7 @@
 use crate::cloud_init::{CloudInitSeed, IsoCreator};
 use crate::config::Config;
 use crate::image::{ImageDownloader, copy_disk_image, detect_disk_format};
+use crate::mount::MountSpec;
 use crate::platform::HostProfile;
 use crate::process::is_process_alive;
 use crate::progress::{StepProgress, sp_complete, sp_fail, sp_start};
@@ -32,6 +33,7 @@ pub struct RunOptions {
     pub image_url: Option<String>,
     pub kernel: Option<PathBuf>,
     pub rootfs: Option<PathBuf>,
+    pub mounts: Vec<MountSpec>,
     pub verbose: bool,
     /// Show indicatif progress spinners during VM startup.
     /// Defaults to `true`. Set to `false` to suppress terminal UI
@@ -53,6 +55,7 @@ impl Default for RunOptions {
             image_url: None,
             kernel: None,
             rootfs: None,
+            mounts: Vec::new(),
             verbose: false,
             show_progress: true,
             on_progress: None,
