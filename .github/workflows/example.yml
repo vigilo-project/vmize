@@ -47,3 +47,49 @@ jobs:
             worker/example/chain-task1/output/
             worker/example/chain-task2/output/
           retention-days: 7
+
+  package-manager-sample:
+    name: "package-manager sample chain"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      VM_QEMU_ACCEL: tcg
+    steps:
+      - name: Checkout vmize
+        uses: actions/checkout@v4
+
+      - name: Checkout package-manager
+        uses: actions/checkout@v4
+        with:
+          repository: vigilo-project/package-manager
+          path: package-manager
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install VM dependencies and image
+        run: |
+          cd vm
+          chmod +x ./deps.sh
+          sudo ./deps.sh
+
+      - name: Run package-manager sample chain
+        working-directory: package-manager
+        env:
+          VMIZE_REPO: ${{ github.workspace }}
+        run: ./scripts/run_vmize_sample_chain.sh
+
+      - name: Upload package-manager sample artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-manager-sample-output
+          path: |
+            package-manager/examples/vmize/sample-package-build/output/
+            package-manager/examples/vmize/sample-package-run/output/
+          retention-days: 7
