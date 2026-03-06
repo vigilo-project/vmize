@@ -63,16 +63,16 @@ jobs:
           chmod +x ./deps.sh
           sudo ./deps.sh
 
-      - name: Verify 4-task concurrent run
+      - name: Verify 4-task batch run
         run: |
-          cargo run -p vmize -- task --concurrent \
-            batch/example/split-task1 \
-            batch/example/split-task2 \
-            batch/example/split-task3 \
-            batch/example/split-task4
+          cargo run -p vmize -- task --batch \
+            worker/example/split-task1 \
+            worker/example/split-task2 \
+            worker/example/split-task3 \
+            worker/example/split-task4
 
-      - name: Run BATCH tests
-        run: cargo test -p batch -- --nocapture
+      - name: Run WORKER tests
+        run: cargo test -p worker -- --nocapture
 
   dashboard:
     name: "3) DASHBOARD stage"

@@ -10,13 +10,9 @@ on:
 permissions:
   contents: read
 
-env:
-  GGUF_MODEL_URL: https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_0.gguf
-  GGUF_MODEL_FILE: qwen2.5-0.5b-instruct-q4_0.gguf
-
 jobs:
-  runc-llama:
-    name: "runc-llama task"
+  chain-example:
+    name: "chain example task"
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
@@ -33,36 +29,21 @@ jobs:
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
 
-      - name: Cache GGUF model
-        id: cache-model
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/vmize-models
-          key: gguf-model-${{ env.GGUF_MODEL_FILE }}
-
-      - name: Download GGUF model
-        if: steps.cache-model.outputs.cache-hit != 'true'
-        run: |
-          mkdir -p ~/.cache/vmize-models
-          wget -q --show-progress -O ~/.cache/vmize-models/${GGUF_MODEL_FILE} "${GGUF_MODEL_URL}"
-
       - name: Install VM dependencies and image
         run: |
           cd vm
           chmod +x ./deps.sh
           sudo ./deps.sh
 
-      - name: Run runc-llama task
-        run: |
-          mkdir -p models
-          cp ~/.cache/vmize-models/${GGUF_MODEL_FILE} models/
-          LOCAL_MODEL_PATH="$(pwd)/models/${GGUF_MODEL_FILE}" \
-            cargo run -p vmize -- task tasks/runc-llama
+      - name: Run chain example task
+        run: cargo run -p vmize -- task worker/example/chain-task1
 
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: runc-llama-output
-          path: tasks/runc-llama/output/
+          name: chain-example-output
+          path: |
+            worker/example/chain-task1/output/
+            worker/example/chain-task2/output/
           retention-days: 7
