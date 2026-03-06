@@ -1,0 +1,26 @@
+{
+  "name": "vigilo-kernel-build",
+  "description": "Install Vigilo deps then build Vigilo kernel from mounted workspace with verbose logs",
+  "disk_size": "120G",
+  "vm": {
+    "boot": "ubuntu",
+    "memory": "16G",
+    "cpus": 8,
+    "mounts": [
+      {
+        "host": "../../../../vigilo",
+        "guest": "/mnt/vigilo",
+        "mode": "rw"
+      }
+    ]
+  },
+  "commands": [
+    "00_install_deps.sh",
+    "10_build_kernel.sh"
+  ],
+  "artifacts": [
+    "kernel-build-timing.txt",
+    "kernel-image",
+    "kernel.config"
+  ]
+}

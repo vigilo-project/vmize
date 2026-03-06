@@ -343,6 +343,8 @@ fn prepare_vm_launch_options(
     match vm_config.boot {
         TaskVmBoot::Ubuntu => Ok(VmLaunchOptions {
             vm_options: VmOptions {
+                memory: vm_config.memory.clone(),
+                cpus: vm_config.cpus,
                 disk_size: effective_disk_size,
                 kernel: None,
                 rootfs: None,
@@ -387,6 +389,8 @@ fn prepare_vm_launch_options(
 
             Ok(VmLaunchOptions {
                 vm_options: VmOptions {
+                    memory: vm_config.memory.clone(),
+                    cpus: vm_config.cpus,
                     disk_size: None,
                     kernel: Some(kernel),
                     rootfs: Some(runtime_rootfs),
@@ -1967,6 +1971,8 @@ mod tests {
         fs::write(&rootfs_path, "rootfs").unwrap();
         task.definition.vm = Some(task::TaskVmConfig {
             boot: TaskVmBoot::Custom,
+            memory: None,
+            cpus: None,
             kernel: Some("kernel/bzImage".to_string()),
             rootfs: Some("rootfs.qcow2".to_string()),
             kernel_config: None,
@@ -2004,6 +2010,8 @@ mod tests {
         fs::create_dir_all(&host_mount_dir).unwrap();
         task.definition.vm = Some(task::TaskVmConfig {
             boot: TaskVmBoot::Ubuntu,
+            memory: Some("16G".to_string()),
+            cpus: Some(8),
             kernel: None,
             rootfs: None,
             kernel_config: None,
@@ -2033,6 +2041,8 @@ mod tests {
 
         let run_calls = mock.run_calls();
         assert_eq!(run_calls.len(), 1);
+        assert_eq!(run_calls[0].memory.as_deref(), Some("16G"));
+        assert_eq!(run_calls[0].cpus, Some(8));
         assert_eq!(run_calls[0].mounts.len(), 1);
         assert_eq!(run_calls[0].mounts[0].host_path, host_mount_dir);
         assert_eq!(
@@ -2046,6 +2056,8 @@ mod tests {
         let (_temp, mut task) = create_test_loaded_task(&["00_first.sh"]);
         task.definition.vm = Some(task::TaskVmConfig {
             boot: TaskVmBoot::Ubuntu,
+            memory: None,
+            cpus: None,
             kernel: None,
             rootfs: None,
             kernel_config: None,
@@ -2089,6 +2101,8 @@ mod tests {
         fs::write(&rootfs_path, "rootfs").unwrap();
         task.definition.vm = Some(task::TaskVmConfig {
             boot: TaskVmBoot::Custom,
+            memory: None,
+            cpus: None,
             kernel: Some("bzImage".to_string()),
             rootfs: Some("rootfs.qcow2".to_string()),
             kernel_config: None,
@@ -2132,6 +2146,8 @@ mod tests {
         fs::write(&rootfs_path, "rootfs").unwrap();
         task.definition.vm = Some(task::TaskVmConfig {
             boot: TaskVmBoot::Custom,
+            memory: None,
+            cpus: None,
             kernel: Some("bzImage".to_string()),
             rootfs: Some("rootfs.qcow2".to_string()),
             kernel_config: None,
@@ -2171,6 +2187,8 @@ mod tests {
         fs::write(&rootfs_path, "rootfs").unwrap();
         task.definition.vm = Some(task::TaskVmConfig {
             boot: TaskVmBoot::Custom,
+            memory: None,
+            cpus: None,
             kernel: Some("bzImage".to_string()),
             rootfs: Some("rootfs.qcow2".to_string()),
             kernel_config: None,
@@ -2213,6 +2231,8 @@ mod tests {
         fs::write(&kernel_config_path, "CONFIG_DM_VERITY=m\n").unwrap();
         task.definition.vm = Some(task::TaskVmConfig {
             boot: TaskVmBoot::Custom,
+            memory: None,
+            cpus: None,
             kernel: Some("bzImage".to_string()),
             rootfs: Some("rootfs.qcow2".to_string()),
             kernel_config: Some("kernel.config".to_string()),
@@ -2255,6 +2275,8 @@ mod tests {
         fs::write(&kernel_config_path, "CONFIG_DM_VERITY=y\n").unwrap();
         task.definition.vm = Some(task::TaskVmConfig {
             boot: TaskVmBoot::Custom,
+            memory: None,
+            cpus: None,
             kernel: Some("bzImage".to_string()),
             rootfs: Some("rootfs.qcow2".to_string()),
             kernel_config: Some("kernel.config".to_string()),

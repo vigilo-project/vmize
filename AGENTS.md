@@ -55,3 +55,8 @@ Use Rust 2021 defaults and keep code `rustfmt`-formatted.
 - Clear reason for change
 - Exact local commands run
 - Relevant logs/screenshots for behavior changes
+
+## Execution Policy (Fail Closed)
+- For workflows that require host directory mounts, execution must be **fail-closed**.
+- If mount setup is unavailable (for example missing `virtiofsd`), stop immediately and report failure.
+- Do **not** use copy/sync-based workarounds (such as `scp`, `rsync`, archive transfer) to bypass mount failures.

@@ -37,6 +37,10 @@ pub struct TaskVmConfig {
     #[serde(default)]
     pub boot: TaskVmBoot,
     #[serde(default)]
+    pub memory: Option<String>,
+    #[serde(default)]
+    pub cpus: Option<u32>,
+    #[serde(default)]
     pub kernel: Option<String>,
     #[serde(default)]
     pub rootfs: Option<String>,
@@ -54,6 +58,8 @@ impl Default for TaskVmConfig {
     fn default() -> Self {
         Self {
             boot: TaskVmBoot::Ubuntu,
+            memory: None,
+            cpus: None,
             kernel: None,
             rootfs: None,
             kernel_config: None,
@@ -257,6 +263,8 @@ mod tests {
                 "commands": [],
                 "vm": {
                     "boot": "custom",
+                    "memory": "16G",
+                    "cpus": 8,
                     "kernel": "../image/bzImage",
                     "rootfs": "../image/rootfs.qcow2",
                     "kernel_config": "../image/kernel.config",
@@ -277,6 +285,8 @@ mod tests {
         let result = load_task(temp.path()).unwrap();
         let vm = result.definition.vm.expect("vm config should be present");
         assert_eq!(vm.boot, TaskVmBoot::Custom);
+        assert_eq!(vm.memory.as_deref(), Some("16G"));
+        assert_eq!(vm.cpus, Some(8));
         assert_eq!(vm.kernel.as_deref(), Some("../image/bzImage"));
         assert_eq!(vm.rootfs.as_deref(), Some("../image/rootfs.qcow2"));
         assert_eq!(vm.kernel_config.as_deref(), Some("../image/kernel.config"));
@@ -476,6 +486,44 @@ mod tests {
         let err = result.unwrap_err();
         assert!(err.contains("vm.mounts[0].guest"));
         assert!(err.contains("absolute path"));
+    }
+
+    #[test]
+    fn load_task_fails_when_vm_memory_is_empty() {
+        let temp = create_task_dir_with_input(
+            r#"{
+                "commands": [],
+                "vm": {
+                    "memory": "   "
+                }
+            }"#,
+            &[],
+        );
+
+        let result = load_task(temp.path());
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("vm.memory"));
+        assert!(err.contains("must not be empty"));
+    }
+
+    #[test]
+    fn load_task_fails_when_vm_cpus_is_zero() {
+        let temp = create_task_dir_with_input(
+            r#"{
+                "commands": [],
+                "vm": {
+                    "cpus": 0
+                }
+            }"#,
+            &[],
+        );
+
+        let result = load_task(temp.path());
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("vm.cpus"));
+        assert!(err.contains("must be greater than 0"));
     }
 
     #[test]
@@ -727,6 +775,18 @@ fn validate_artifact_path(value: &str) -> Result<(), String> {
 }
 
 fn validate_vm_config(vm: &TaskVmConfig) -> Result<(), String> {
+    if let Some(memory) = vm.memory.as_deref()
+        && memory.trim().is_empty()
+    {
+        return Err("vm.memory must not be empty when provided".to_string());
+    }
+
+    if let Some(cpus) = vm.cpus
+        && cpus == 0
+    {
+        return Err("vm.cpus must be greater than 0 when provided".to_string());
+    }
+
     for (index, mount) in vm.mounts.iter().enumerate() {
         validate_vm_mount(mount, index)?;
     }

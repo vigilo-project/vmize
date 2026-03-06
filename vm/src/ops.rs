@@ -88,21 +88,37 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
-fn mount_runcmd_for_spec(index: usize, mount: &MountSpec) -> Vec<String> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MountTransport {
+    VirtioFs,
+    Virtio9p,
+}
+
+fn mount_runcmd_for_spec(index: usize, mount: &MountSpec, transport: MountTransport) -> Vec<String> {
     let tag = virtiofs_tag_for_index(index);
     let guest_path = mount.guest_path.to_string_lossy().to_string();
     let quoted_guest = shell_quote(&guest_path);
-    let mount_cmd = match mount.mode {
-        MountMode::ReadOnly => format!(
-            "mount -t virtiofs -o ro {} {}",
-            shell_quote(&tag),
-            quoted_guest
-        ),
-        MountMode::ReadWrite => format!(
-            "mount -t virtiofs {} {}",
-            shell_quote(&tag),
-            quoted_guest
-        ),
+    let quoted_tag = shell_quote(&tag);
+
+    let mount_cmd = match (transport, mount.mode) {
+        (MountTransport::VirtioFs, MountMode::ReadOnly) => {
+            format!("mount -t virtiofs -o ro {} {}", quoted_tag, quoted_guest)
+        }
+        (MountTransport::VirtioFs, MountMode::ReadWrite) => {
+            format!("mount -t virtiofs {} {}", quoted_tag, quoted_guest)
+        }
+        (MountTransport::Virtio9p, MountMode::ReadOnly) => {
+            format!(
+                "mount -t 9p -o trans=virtio,version=9p2000.L,ro {} {}",
+                quoted_tag, quoted_guest
+            )
+        }
+        (MountTransport::Virtio9p, MountMode::ReadWrite) => {
+            format!(
+                "mount -t 9p -o trans=virtio,version=9p2000.L {} {}",
+                quoted_tag, quoted_guest
+            )
+        }
     };
 
     vec![format!("mkdir -p {}", quoted_guest), mount_cmd]
@@ -746,11 +762,18 @@ async fn run_vm_inner(config: &Config, options: RunOptions) -> Result<VmRecord> 
     notify_progress(&on_progress, 5, 8, "Cloud-init seed");
     info!("Creating cloud-init seed...");
     let mut seed = CloudInitSeed::with_config(hostname.clone(), username.clone(), public_key);
+
+    let mount_transport = if host_profile.os == "macos" {
+        MountTransport::Virtio9p
+    } else {
+        MountTransport::VirtioFs
+    };
+
     if !mounts.is_empty() {
         let mount_commands: Vec<String> = mounts
             .iter()
             .enumerate()
-            .flat_map(|(index, mount)| mount_runcmd_for_spec(index, mount))
+            .flat_map(|(index, mount)| mount_runcmd_for_spec(index, mount, mount_transport))
             .collect();
         seed.extend_runcmd(mount_commands);
     }
@@ -789,18 +812,23 @@ async fn run_vm_inner(config: &Config, options: RunOptions) -> Result<VmRecord> 
     notify_progress(&on_progress, 7, 8, "Starting QEMU");
     info!("Building QEMU configuration...");
 
-    let virtiofs_runtime = match start_virtiofs_runtime(&vm_dir, &mounts) {
-        Ok(runtime) => runtime,
-        Err(err) => {
-            if let Err(remove_err) = fs::remove_dir_all(&vm_dir) {
-                info!(
-                    "Failed to remove VM directory after virtiofs setup error {}: {}",
-                    vm_dir.display(),
-                    remove_err
-                );
+    // Start virtiofsd on Linux; on macOS use virtio-9p (QEMU built-in, no daemon).
+    let virtiofs_runtime = if mount_transport == MountTransport::VirtioFs {
+        match start_virtiofs_runtime(&vm_dir, &mounts) {
+            Ok(runtime) => runtime,
+            Err(err) => {
+                if let Err(remove_err) = fs::remove_dir_all(&vm_dir) {
+                    info!(
+                        "Failed to remove VM directory after virtiofs setup error {}: {}",
+                        vm_dir.display(),
+                        remove_err
+                    );
+                }
+                return Err(err);
             }
-            return Err(err);
         }
+    } else {
+        VirtioFsRuntime::default()
     };
 
     // Custom kernel boot: direct-boot with kernel+rootfs, no EFI BIOS.
@@ -839,6 +867,13 @@ async fn run_vm_inner(config: &Config, options: RunOptions) -> Result<VmRecord> 
 
     for share in &virtiofs_runtime.shares {
         qemu_config = qemu_config.virtiofs_share(&share.tag, &share.socket_path);
+    }
+
+    if mount_transport == MountTransport::Virtio9p {
+        for (index, mount) in mounts.iter().enumerate() {
+            let tag = virtiofs_tag_for_index(index);
+            qemu_config = qemu_config.virtio_9p_share(&tag, &mount.host_path);
+        }
     }
 
     info!("Starting QEMU VM...");

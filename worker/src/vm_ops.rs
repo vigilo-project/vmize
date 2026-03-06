@@ -15,6 +15,8 @@ pub use vm::VmRecord;
 /// Options for VM creation (mirrors vm::RunOptions).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct VmOptions {
+    pub memory: Option<String>,
+    pub cpus: Option<u32>,
     pub disk_size: Option<String>,
     pub kernel: Option<PathBuf>,
     pub rootfs: Option<PathBuf>,
@@ -58,6 +60,8 @@ pub struct RealVmOps;
 impl VmOps for RealVmOps {
     async fn run(&self, options: VmOptions) -> Result<VmRecord> {
         let vm_options = vm::RunOptions {
+            memory: options.memory,
+            cpus: options.cpus,
             disk_size: options.disk_size,
             kernel: options.kernel,
             rootfs: options.rootfs,

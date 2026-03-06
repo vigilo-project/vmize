@@ -36,6 +36,7 @@ pub struct QemuConfig {
     qemu_name: Option<String>,
     ssh_port: Option<u16>,
     virtiofs_shares: Vec<VirtioFsShare>,
+    virtio_9p_shares: Vec<Virtio9pShare>,
     display: bool,
     daemonize: bool,
 }
@@ -44,6 +45,13 @@ pub struct QemuConfig {
 struct VirtioFsShare {
     tag: String,
     socket_path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Virtio9pShare {
+    tag: String,
+    host_path: PathBuf,
+    security_model: String,
 }
 
 impl Default for QemuConfig {
@@ -77,6 +85,7 @@ impl Default for QemuConfig {
             qemu_name: None,
             ssh_port: None,
             virtiofs_shares: Vec::new(),
+            virtio_9p_shares: Vec::new(),
             display: false,
             daemonize: true,
         }
@@ -195,6 +204,16 @@ impl QemuConfig {
         self
     }
 
+    /// Add a virtio-9p share (QEMU built-in, no external daemon).
+    pub fn virtio_9p_share<P: AsRef<Path>>(mut self, tag: impl Into<String>, host_path: P) -> Self {
+        self.virtio_9p_shares.push(Virtio9pShare {
+            tag: tag.into(),
+            host_path: host_path.as_ref().to_path_buf(),
+            security_model: "mapped-xattr".to_string(),
+        });
+        self
+    }
+
     /// Return the configured pidfile path, if set.
     pub fn pid_file_path(&self) -> Option<&Path> {
         self.pid_file.as_deref()
@@ -278,6 +297,20 @@ impl QemuConfig {
             ));
         }
 
+        for (index, share) in self.virtio_9p_shares.iter().enumerate() {
+            let fsdev_id = format!("fsdev{index}");
+            cmd.arg("-fsdev").arg(format!(
+                "local,id={},path={},security_model={}",
+                fsdev_id,
+                share.host_path.display(),
+                share.security_model
+            ));
+            cmd.arg("-device").arg(format!(
+                "virtio-9p-pci,fsdev={},mount_tag={}",
+                fsdev_id, share.tag
+            ));
+        }
+
         // Configure display
         if self.display {
             cmd.arg("-display").arg("gtk");
@@ -353,6 +386,24 @@ impl QemuConfig {
                 bail!(
                     "virtiofs socket does not exist: {}",
                     share.socket_path.display()
+                );
+            }
+        }
+
+        for share in &self.virtio_9p_shares {
+            if share.tag.trim().is_empty() {
+                bail!("9p tag must not be empty");
+            }
+            if !share.host_path.is_absolute() {
+                bail!(
+                    "9p host path must be absolute: {}",
+                    share.host_path.display()
+                );
+            }
+            if !share.host_path.exists() {
+                bail!(
+                    "9p host path does not exist: {}",
+                    share.host_path.display()
                 );
             }
         }
@@ -630,5 +681,31 @@ mod tests {
         assert!(args.iter().any(|arg| {
             arg == "-device" || arg.contains("vhost-user-fs-pci,chardev=virtiofsch0,tag=vmizefs0")
         }));
+    }
+
+    #[test]
+    fn test_qemu_config_build_args_with_9p_share() {
+        let temp_file = NamedTempFile::new().unwrap();
+        let temp_file2 = NamedTempFile::new().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+
+        let config = QemuConfig::new()
+            .disk_image(temp_file.path())
+            .cloud_init_iso(temp_file2.path())
+            .virtio_9p_share("vmizefs0", temp_dir.path());
+
+        let args = config.build_args().unwrap();
+        let args_str = args.join(" ");
+        assert!(
+            args_str.contains(&format!(
+                "local,id=fsdev0,path={},security_model=mapped-xattr",
+                temp_dir.path().display()
+            )),
+            "expected -fsdev args in: {args_str}"
+        );
+        assert!(
+            args_str.contains("virtio-9p-pci,fsdev=fsdev0,mount_tag=vmizefs0"),
+            "expected -device virtio-9p-pci args in: {args_str}"
+        );
     }
 }
