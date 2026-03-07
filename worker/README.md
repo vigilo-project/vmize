@@ -79,6 +79,9 @@ cargo build --release
 
 # package-manager-owned canonical sample chain
 ./target/release/vmize task ../package-manager/examples/vmize/sample-package-build
+
+# package-manager-owned llama sample chain
+./target/release/vmize task ../package-manager/examples/vmize/llama-package-build
 ```
 
 Per-task kernel config requirements for this chain are documented in

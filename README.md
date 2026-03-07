@@ -107,6 +107,12 @@ Or from the `package-manager` repo:
 ../package-manager/scripts/run_vmize_sample_chain.sh
 ```
 
+Heavier llama package-manager sample chain:
+
+```bash
+./target/release/vmize task ../package-manager/examples/vmize/llama-package-build
+```
+
 ## Quick Start: dashboard
 
 ```bash
