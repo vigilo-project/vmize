@@ -215,10 +215,7 @@ struct AddTaskRequest {
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
-/// Start the dashboard web server on the given port.
-///
-/// This function runs until the server is shut down (e.g. the task is aborted).
-pub async fn start(port: u16) {
+fn build_router() -> Router {
     let (sse_tx, _) = broadcast::channel::<String>(256);
     let app_state = AppState {
         state: Arc::new(RwLock::new(DashboardState::new())),
@@ -226,7 +223,7 @@ pub async fn start(port: u16) {
         workspace_root: detect_workspace_root(),
     };
 
-    let app = Router::new()
+    Router::new()
         .route("/", get(serve_dashboard))
         .route("/events", get(sse_handler))
         .route("/api/status", get(get_status))
@@ -234,12 +231,29 @@ pub async fn start(port: u16) {
         .route("/api/tasks", post(add_task))
         .route("/api/tasks/{id}", delete(remove_task))
         .route("/api/run", post(run_tasks))
-        .with_state(app_state);
+        .with_state(app_state)
+}
 
-    let addr = format!("0.0.0.0:{port}");
+/// Start the dashboard web server on the given listener.
+///
+/// This function runs until the server is shut down (e.g. the task is aborted).
+pub async fn start_with_listener(listener: tokio::net::TcpListener) {
+    let port = listener
+        .local_addr()
+        .map(|addr| addr.port())
+        .unwrap_or_default();
     eprintln!("Dashboard: http://localhost:{port}");
-    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+    let app = build_router();
     axum::serve(listener, app).await.unwrap();
+}
+
+/// Start the dashboard web server on the given port.
+///
+/// This function runs until the server is shut down (e.g. the task is aborted).
+pub async fn start(port: u16) {
+    let addr = format!("0.0.0.0:{port}");
+    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+    start_with_listener(listener).await;
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────

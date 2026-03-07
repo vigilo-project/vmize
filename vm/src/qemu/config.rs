@@ -401,10 +401,7 @@ impl QemuConfig {
                 );
             }
             if !share.host_path.exists() {
-                bail!(
-                    "9p host path does not exist: {}",
-                    share.host_path.display()
-                );
+                bail!("9p host path does not exist: {}", share.host_path.display());
             }
         }
 

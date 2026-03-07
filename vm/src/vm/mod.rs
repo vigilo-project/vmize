@@ -2,7 +2,7 @@ pub mod port;
 pub mod record;
 
 pub use port::{
-    acquire_vm_creation_lock, reserve_specific_ssh_port, ssh_port_for_vm_index, ssh_port_locks_dir,
+    acquire_vm_creation_lock, reserve_ssh_port, ssh_port_for_vm_index, ssh_port_locks_dir,
     validate_vm_capacity,
 };
 pub use record::{

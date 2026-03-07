@@ -8,6 +8,7 @@
 //!   - `curl` on PATH (used for the SSE replay test)
 
 use std::path::Path;
+use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 use std::{env, fs};
 
@@ -34,13 +35,7 @@ fn example_chain_task_dir() -> String {
         .into_owned()
 }
 
-fn find_free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
+static DASHBOARD_VM_IT_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 struct TestServer {
     pub port: u16,
@@ -49,14 +44,25 @@ struct TestServer {
 
 impl TestServer {
     fn start() -> Self {
-        let port = find_free_port();
+        let std_listener = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("failed to bind dashboard test listener");
+        std_listener
+            .set_nonblocking(true)
+            .expect("failed to set dashboard test listener nonblocking");
+        let port = std_listener
+            .local_addr()
+            .expect("failed to read dashboard test port")
+            .port();
 
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
             .expect("failed to create tokio runtime");
+        let _rt_guard = rt.enter();
+        let listener = tokio::net::TcpListener::from_std(std_listener)
+            .expect("failed to convert dashboard test listener");
 
-        let handle = rt.spawn(dashboard::start(port));
+        let handle = rt.spawn(dashboard::start_with_listener(listener));
 
         // Leak the runtime so it stays alive for the test duration.
         // The JoinHandle::abort in Drop will stop the server task.
@@ -385,6 +391,9 @@ fn run_api_run_task_succeeds() {
         eprintln!("Skipping VM end-to-end test: set DASHBOARD_IT=1 to run.");
         return;
     }
+    let _guard = DASHBOARD_VM_IT_LOCK
+        .lock()
+        .expect("failed to acquire dashboard VM IT lock");
 
     let server = TestServer::start();
     let client = server.client();
@@ -444,6 +453,9 @@ fn run_api_run_chain_task_succeeds() {
         eprintln!("Skipping VM chain end-to-end test: set DASHBOARD_IT=1 to run.");
         return;
     }
+    let _guard = DASHBOARD_VM_IT_LOCK
+        .lock()
+        .expect("failed to acquire dashboard VM IT lock");
 
     let server = TestServer::start();
     let client = server.client();

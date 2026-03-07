@@ -92,7 +92,8 @@ mod tests {
 
     #[test]
     fn parse_mount_spec_rejects_nonexistent_host_path() {
-        let err = parse_mount_spec("/definitely/missing/path:/mnt/host").expect_err("spec must fail");
+        let err =
+            parse_mount_spec("/definitely/missing/path:/mnt/host").expect_err("spec must fail");
         assert!(err.to_string().contains("host path does not exist"));
     }
 }

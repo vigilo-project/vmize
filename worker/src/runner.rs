@@ -403,7 +403,10 @@ fn prepare_vm_launch_options(
     }
 }
 
-fn resolve_vm_mounts(task: &LoadedTask, vm_config: &task::TaskVmConfig) -> Result<Vec<vm::MountSpec>, Error> {
+fn resolve_vm_mounts(
+    task: &LoadedTask,
+    vm_config: &task::TaskVmConfig,
+) -> Result<Vec<vm::MountSpec>, Error> {
     if vm_config.mounts.is_empty() {
         return Ok(Vec::new());
     }

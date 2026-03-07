@@ -133,7 +133,12 @@ impl SshClient {
 
         let port_str = port.to_string();
         let user_host = format!("{}@{}", username, host);
-        let mut args: Vec<&str> = vec!["-i", key_path.to_str().context("Invalid key path")?, "-p", &port_str];
+        let mut args: Vec<&str> = vec![
+            "-i",
+            key_path.to_str().context("Invalid key path")?,
+            "-p",
+            &port_str,
+        ];
         args.extend_from_slice(&SSH_STRICT_OPTIONS);
         args.extend_from_slice(&["-o", "ConnectTimeout=10", &user_host, "--", command]);
 

@@ -10,7 +10,7 @@ use crate::qemu::{QemuConfig, QemuRunner};
 use crate::ssh::{SSH_STRICT_OPTIONS, SshClient};
 use crate::vm::{
     VmRecord, VmRuntimeStatus, VmStatus, acquire_vm_creation_lock, keep_key_paths, list_vm_records,
-    read_vm_record, remove_vm_instance, reserve_specific_ssh_port, ssh_port_for_vm_index,
+    read_vm_record, remove_vm_instance, reserve_ssh_port, ssh_port_for_vm_index,
     ssh_port_locks_dir, stop_qemu_and_wait, validate_vm_capacity, write_vm_record,
 };
 use anyhow::{Context, Result, bail};
@@ -94,7 +94,11 @@ enum MountTransport {
     Virtio9p,
 }
 
-fn mount_runcmd_for_spec(index: usize, mount: &MountSpec, transport: MountTransport) -> Vec<String> {
+fn mount_runcmd_for_spec(
+    index: usize,
+    mount: &MountSpec,
+    transport: MountTransport,
+) -> Vec<String> {
     let tag = virtiofs_tag_for_index(index);
     let guest_path = mount.guest_path.to_string_lossy().to_string();
     let quoted_guest = shell_quote(&guest_path);
@@ -720,18 +724,21 @@ async fn run_vm_inner(config: &Config, options: RunOptions) -> Result<VmRecord> 
     let vm_creation_lock =
         acquire_vm_creation_lock(&instances_dir).context("Failed to acquire VM creation lock")?;
 
-    // VM ID determines SSH port: vm0 -> 2220, vm1 -> 2221, ..., vm9 -> 2229
+    // VM ID determines the preferred SSH port: vm0 -> 2220, vm1 -> 2221, ..., vm9 -> 2229.
+    // If the preferred port is busy on the host, fall back to the next available one.
     let vm_index =
         validate_vm_capacity(&instances_dir).context("Failed to validate VM capacity")?;
     let vm_id = format!("vm{}", vm_index);
-    let ssh_port =
+    let preferred_ssh_port =
         ssh_port_for_vm_index(vm_index).expect("validate_vm_capacity should ensure valid index");
-
-    info!("VM ID: {} (SSH port: {})", vm_id, ssh_port);
-
-    // Reserve the fixed SSH port for this VM
-    let _port_reservation = reserve_specific_ssh_port(&instances_dir, ssh_port)
+    let port_reservation = reserve_ssh_port(&instances_dir, preferred_ssh_port)
         .context("Failed to reserve SSH port for VM")?;
+    let ssh_port = port_reservation.port();
+
+    info!(
+        "VM ID: {} (preferred SSH port: {}, assigned SSH port: {})",
+        vm_id, preferred_ssh_port, ssh_port
+    );
 
     let vm_dir = instances_dir.join(&vm_id);
     info!("VM directory: {}", vm_dir.display());
@@ -753,8 +760,8 @@ async fn run_vm_inner(config: &Config, options: RunOptions) -> Result<VmRecord> 
         }
     }
 
-    // VM directory created successfully, release the global lock
-    // Port reservation will be released when _port_reservation drops
+    // VM directory created successfully, release the global lock.
+    // Port reservation will be released when port_reservation drops.
     drop(vm_creation_lock);
 
     // Step 6: Cloud-init seed
@@ -969,6 +976,7 @@ async fn run_vm_inner(config: &Config, options: RunOptions) -> Result<VmRecord> 
         return Err(ssh_err);
     }
 
+    drop(port_reservation);
     Ok(vm_record)
 }
 

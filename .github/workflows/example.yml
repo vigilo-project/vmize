@@ -81,7 +81,9 @@ jobs:
       - name: Run package-manager sample chain
         working-directory: package-manager
         env:
-          VMIZE_REPO: ${{ github.workspace }}
+          VMIZE_GIT_URL: https://github.com/${{ github.repository }}.git
+          VMIZE_GIT_REF: ${{ github.sha }}
+          PACKAGE_MANAGER_GIT_REF: main
         run: ./scripts/run_sample_chain.sh
 
       - name: Upload package-manager sample artifacts
@@ -92,6 +94,7 @@ jobs:
           path: |
             package-manager/examples/sample-package/build/output/
             package-manager/examples/sample-package/run/output/
+          if-no-files-found: ignore
           retention-days: 7
 
   package-manager-llama-sample:
@@ -144,7 +147,9 @@ jobs:
       - name: Run package-manager llama sample chain
         working-directory: package-manager
         env:
-          VMIZE_REPO: ${{ github.workspace }}
+          VMIZE_GIT_URL: https://github.com/${{ github.repository }}.git
+          VMIZE_GIT_REF: ${{ github.sha }}
+          PACKAGE_MANAGER_GIT_REF: main
           LLAMA_MODEL_URL: ${{ env.LLAMA_MODEL_URL }}
         run: ./scripts/run_sample_chain.sh examples/llama-package/build
 
@@ -156,4 +161,5 @@ jobs:
           path: |
             package-manager/examples/llama-package/build/output/
             package-manager/examples/llama-package/run/output/
+          if-no-files-found: ignore
           retention-days: 7

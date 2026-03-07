@@ -230,10 +230,10 @@ pub fn ssh_port_lock_path(instances_dir: &Path, port: u16) -> PathBuf {
     ssh_port_locks_dir(instances_dir).join(format!("{}.lock", port))
 }
 
-
 /// Reserve a specific SSH port with a file lock.
 /// This is used for fixed port allocation where the port is predetermined.
 /// Returns an error if the port is already reserved by another active process.
+#[allow(dead_code)]
 pub fn reserve_specific_ssh_port(instances_dir: &Path, port: u16) -> Result<SshPortReservation> {
     std::fs::create_dir_all(ssh_port_locks_dir(instances_dir))?;
 
