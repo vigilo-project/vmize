@@ -25,8 +25,9 @@ Tasks can form a Task Chain with `next_task_dir`; upstream `artifacts` are hande
 ### [`worker/example`](./worker/example)
 
 Curated sample tasks (`runc`, `runc-llama-build`, `runc-llama-hardened`, `runc-llama-verity-pack`, `runc-llama-verity-run`, `runc-llama-ima-verify-run`, `ima-sign`, `ollama`) live here.
-The canonical package-manager sample chain now lives in the sibling
-`../package-manager/examples/vmize/` tree and is consumed by `vmize`.
+The canonical package-manager sample chains now live in the sibling
+`../package-manager/examples/sample-package/` and
+`../package-manager/examples/llama-package/` trees and are consumed by `vmize`.
 
 ### [`dashboard`](./dashboard)
 
@@ -98,19 +99,19 @@ cargo build --release
 Cross-repo package-manager sample chain:
 
 ```bash
-./target/release/vmize task ../package-manager/examples/vmize/sample-package-build
+./target/release/vmize task ../package-manager/examples/sample-package/build
 ```
 
 Or from the `package-manager` repo:
 
 ```bash
-../package-manager/scripts/run_vmize_sample_chain.sh
+../package-manager/scripts/run_sample_chain.sh
 ```
 
 Heavier llama package-manager sample chain:
 
 ```bash
-./target/release/vmize task ../package-manager/examples/vmize/llama-package-build
+./target/release/vmize task ../package-manager/examples/llama-package/build
 ```
 
 ## Quick Start: dashboard

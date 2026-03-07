@@ -82,7 +82,7 @@ jobs:
         working-directory: package-manager
         env:
           VMIZE_REPO: ${{ github.workspace }}
-        run: ./scripts/run_vmize_sample_chain.sh
+        run: ./scripts/run_sample_chain.sh
 
       - name: Upload package-manager sample artifacts
         if: always()
@@ -90,8 +90,8 @@ jobs:
         with:
           name: package-manager-sample-output
           path: |
-            package-manager/examples/vmize/sample-package-build/output/
-            package-manager/examples/vmize/sample-package-run/output/
+            package-manager/examples/sample-package/build/output/
+            package-manager/examples/sample-package/run/output/
           retention-days: 7
 
   package-manager-llama-sample:
@@ -122,17 +122,17 @@ jobs:
       - name: Cache llama model
         uses: actions/cache@v4
         with:
-          path: package-manager/examples/vmize/llama-package-build/input/models/qwen2.5-0.5b-instruct-q2_k.gguf
+          path: package-manager/examples/llama-package/build/input/models/qwen2.5-0.5b-instruct-q2_k.gguf
           key: package-manager-llama-model-qwen2.5-0.5b-instruct-q2_k-v1
 
       - name: Download pinned GGUF model
         working-directory: package-manager
         run: |
-          mkdir -p examples/vmize/llama-package-build/input/models
-          if [ ! -s examples/vmize/llama-package-build/input/models/qwen2.5-0.5b-instruct-q2_k.gguf ]; then
+          mkdir -p examples/llama-package/build/input/models
+          if [ ! -s examples/llama-package/build/input/models/qwen2.5-0.5b-instruct-q2_k.gguf ]; then
             curl -L --fail --retry 5 --retry-all-errors \
               "$LLAMA_MODEL_URL" \
-              -o examples/vmize/llama-package-build/input/models/qwen2.5-0.5b-instruct-q2_k.gguf
+              -o examples/llama-package/build/input/models/qwen2.5-0.5b-instruct-q2_k.gguf
           fi
 
       - name: Install VM dependencies and image
@@ -146,7 +146,7 @@ jobs:
         env:
           VMIZE_REPO: ${{ github.workspace }}
           LLAMA_MODEL_URL: ${{ env.LLAMA_MODEL_URL }}
-        run: ./scripts/run_vmize_sample_chain.sh examples/vmize/llama-package-build
+        run: ./scripts/run_sample_chain.sh examples/llama-package/build
 
       - name: Upload package-manager llama sample artifacts
         if: always()
@@ -154,6 +154,6 @@ jobs:
         with:
           name: package-manager-llama-sample-output
           path: |
-            package-manager/examples/vmize/llama-package-build/output/
-            package-manager/examples/vmize/llama-package-run/output/
+            package-manager/examples/llama-package/build/output/
+            package-manager/examples/llama-package/run/output/
           retention-days: 7

@@ -12,7 +12,9 @@ Built on top of [`vm`](https://github.com/vigilo-project/vm), `worker` defines a
 Shared curated tasks in this workspace live in `./example/`.
 For chain-oriented development notes and change history, see [`TASK_CHAIN_TUTORIAL.md`](./TASK_CHAIN_TUTORIAL.md).
 The canonical package-manager sample tasks live in the sibling
-`../package-manager/examples/vmize/` tree and are executed by this workspace.
+`../package-manager/examples/sample-package/` and
+`../package-manager/examples/llama-package/` trees and are executed by this
+workspace.
 
 ## Minimum Goal
 `worker` is considered healthy when it can:
@@ -78,10 +80,10 @@ cargo build --release
 ./target/release/vmize task worker/example/runc-llama-build
 
 # package-manager-owned canonical sample chain
-./target/release/vmize task ../package-manager/examples/vmize/sample-package-build
+./target/release/vmize task ../package-manager/examples/sample-package/build
 
 # package-manager-owned llama sample chain
-./target/release/vmize task ../package-manager/examples/vmize/llama-package-build
+./target/release/vmize task ../package-manager/examples/llama-package/build
 ```
 
 Per-task kernel config requirements for this chain are documented in
